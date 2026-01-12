@@ -12,6 +12,7 @@ from src.services.video_renderer import video_renderer
 from src.services.webhook_service import webhook_service
 from src.utils.s3_uploader import s3_uploader
 from src.utils.file_manager import file_manager
+from src.utils.constants import MAX_SENTENCE_COUNT, CLEANUP_ON_FAILURE, CLEANUP_ON_SUCCESS
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ async def process_job(job: RenderJob):
     job_id = job.job_id
     job_manager = get_job_manager()
     job_dir = None
+    job_succeeded = False
 
     try:
         # Update status to processing
@@ -42,6 +44,10 @@ async def process_job(job: RenderJob):
 
         if not sentences:
             raise ValueError("Script processing resulted in no sentences")
+        if len(sentences) > MAX_SENTENCE_COUNT:
+            raise ValueError(
+                f"Script produces too many sentences. Maximum {MAX_SENTENCE_COUNT} allowed."
+            )
 
         # Step 2: Generate TTS voiceover
         logger.info(f"[{job_id}] Step 2: Generating voiceover")
@@ -106,6 +112,7 @@ async def process_job(job: RenderJob):
         )
 
         logger.info(f"[{job_id}] Job completed successfully")
+        job_succeeded = True
 
     except Exception as e:
         error_msg = str(e)
@@ -115,7 +122,10 @@ async def process_job(job: RenderJob):
     finally:
         # Cleanup job directory
         if job_dir:
-            file_manager.cleanup_job_directory(job_dir)
+            if job_succeeded and CLEANUP_ON_SUCCESS:
+                file_manager.cleanup_job_directory(job_dir)
+            elif not job_succeeded and CLEANUP_ON_FAILURE:
+                file_manager.cleanup_job_directory(job_dir)
 
 
 async def worker(worker_id: int):

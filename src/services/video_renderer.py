@@ -3,6 +3,13 @@ import logging
 from pathlib import Path
 import httpx
 
+from src.utils.constants import (
+    AUDIO_BITRATE,
+    DOWNLOAD_TIMEOUT_SECONDS,
+    FFMPEG_PRESET,
+    MAX_VIDEO_SIZE_MB,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -12,7 +19,7 @@ class VideoRenderer:
     """
 
     def __init__(self):
-        self.ffmpeg_preset = "fast"  # Balance between speed and quality
+        self.ffmpeg_preset = FFMPEG_PRESET  # Balance between speed and quality
 
     async def render_video(
         self,
@@ -75,14 +82,21 @@ class VideoRenderer:
                     extension = "." + ext
 
             base_video = job_dir / f"base{extension}"
+            max_bytes = MAX_VIDEO_SIZE_MB * 1024 * 1024
+            downloaded_bytes = 0
 
             # Stream download for large files
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
                 async with client.stream("GET", url) as response:
                     response.raise_for_status()
 
                     with open(base_video, "wb") as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
+                            downloaded_bytes += len(chunk)
+                            if downloaded_bytes > max_bytes:
+                                raise RuntimeError(
+                                    f"Base video exceeds limit of {MAX_VIDEO_SIZE_MB} MB"
+                                )
                             f.write(chunk)
 
             logger.debug(f"Downloaded base video: {base_video}")
@@ -130,7 +144,7 @@ class VideoRenderer:
                 "-c:v", "libx264",
                 "-preset", self.ffmpeg_preset,
                 "-c:a", "aac",
-                "-b:a", "192k",
+                "-b:a", AUDIO_BITRATE,
                 "-shortest",  # End when shortest stream ends
                 str(output_file),
                 "-y"  # Overwrite output file

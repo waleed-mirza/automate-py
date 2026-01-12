@@ -3,6 +3,8 @@ import logging
 from pathlib import Path
 import httpx
 
+from src.utils.constants import DOWNLOAD_TIMEOUT_SECONDS, MAX_AUDIO_SIZE_MB
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,16 +72,26 @@ class AudioMixer:
             # Determine file extension from URL or default to mp3
             extension = ".mp3"
             if "." in url.split("/")[-1]:
-                extension = "." + url.split(".")[-1].split("?")[0]
+                ext = url.split(".")[-1].split("?")[0]
+                if ext.lower() in ["mp3", "wav", "aac", "m4a", "flac", "ogg"]:
+                    extension = "." + ext
 
             bgm_file = job_dir / f"bgm{extension}"
+            max_bytes = MAX_AUDIO_SIZE_MB * 1024 * 1024
+            downloaded_bytes = 0
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url)
-                response.raise_for_status()
+            async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
 
-                with open(bgm_file, "wb") as f:
-                    f.write(response.content)
+                    with open(bgm_file, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            downloaded_bytes += len(chunk)
+                            if downloaded_bytes > max_bytes:
+                                raise RuntimeError(
+                                    f"Background music exceeds limit of {MAX_AUDIO_SIZE_MB} MB"
+                                )
+                            f.write(chunk)
 
             logger.debug(f"Downloaded BGM: {bgm_file}")
             return bgm_file

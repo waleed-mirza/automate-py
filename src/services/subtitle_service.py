@@ -3,6 +3,13 @@ import json
 import logging
 from pathlib import Path
 
+from src.utils.constants import (
+    DEFAULT_SUBTITLE_COLOR,
+    DEFAULT_SUBTITLE_FONT,
+    DEFAULT_SUBTITLE_OUTLINE,
+    DEFAULT_SUBTITLE_SIZE,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,13 +21,13 @@ class SubtitleService:
 
     def __init__(self):
         self.default_style = {
-            "font_name": "Arial",
-            "font_size": 24,
-            "primary_color": "&H00FFFFFF",  # White
+            "font_name": DEFAULT_SUBTITLE_FONT,
+            "font_size": DEFAULT_SUBTITLE_SIZE,
+            "primary_color": DEFAULT_SUBTITLE_COLOR,  # White
             "outline_color": "&H00000000",  # Black
             "back_color": "&H80000000",     # Semi-transparent black
             "bold": -1,
-            "outline": 2,
+            "outline": DEFAULT_SUBTITLE_OUTLINE,
             "shadow": 0,
             "alignment": 2,  # Bottom center
             "margin_v": 20

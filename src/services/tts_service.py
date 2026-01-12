@@ -1,8 +1,10 @@
 import subprocess
 import logging
+import os
 from pathlib import Path
 
 from config import settings
+from src.utils.constants import PIPER_THREADS
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +63,21 @@ class TTSService:
                 "--output_file", str(output_path)
             ]
 
+            env = os.environ.copy()
+            env.update({
+                "OMP_NUM_THREADS": str(PIPER_THREADS),
+                "MKL_NUM_THREADS": str(PIPER_THREADS),
+                "OPENBLAS_NUM_THREADS": str(PIPER_THREADS),
+                "NUMEXPR_NUM_THREADS": str(PIPER_THREADS),
+            })
+
             process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
+                env=env
             )
 
             stdout, stderr = process.communicate(input=text)

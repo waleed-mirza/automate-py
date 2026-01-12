@@ -1,9 +1,11 @@
 import httpx
 import logging
+import asyncio
 from datetime import datetime
 from typing import Literal
 
 from config import settings
+from src.utils.constants import WEBHOOK_RETRY_ATTEMPTS, WEBHOOK_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +18,7 @@ class WebhookService:
 
     def __init__(self):
         self.webhook_url = settings.webhook_url
-        self.timeout = 5.0  # 5 second timeout
+        self.timeout = WEBHOOK_TIMEOUT
 
     async def send_voiceover_uploaded(self, job_id: str, voice_url: str):
         """
@@ -75,30 +77,40 @@ class WebhookService:
             logger.warning(f"Webhook URL not configured, skipping {event} notification")
             return
 
-        try:
-            logger.info(f"Sending webhook: {event} to {self.webhook_url}")
+        max_attempts = max(1, WEBHOOK_RETRY_ATTEMPTS + 1)
+        attempt = 0
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                logger.info(f"Sending webhook: {event} to {self.webhook_url} (attempt {attempt}/{max_attempts})")
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    self.webhook_url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                )
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        self.webhook_url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
 
-                # Log response
-                if response.status_code >= 200 and response.status_code < 300:
-                    logger.info(f"Webhook {event} sent successfully (status: {response.status_code})")
-                else:
+                    # Log response
+                    if 200 <= response.status_code < 300:
+                        logger.info(
+                            f"Webhook {event} sent successfully (status: {response.status_code})"
+                        )
+                        return
+
                     logger.warning(
                         f"Webhook {event} returned non-success status: {response.status_code} - {response.text}"
                     )
 
-        except httpx.TimeoutException:
-            logger.warning(f"Webhook {event} timed out after {self.timeout}s")
-        except httpx.HTTPError as e:
-            logger.warning(f"Webhook {event} HTTP error: {str(e)}")
-        except Exception as e:
-            logger.warning(f"Webhook {event} failed: {str(e)}")
+            except httpx.TimeoutException:
+                logger.warning(f"Webhook {event} timed out after {self.timeout}s")
+            except httpx.HTTPError as e:
+                logger.warning(f"Webhook {event} HTTP error: {str(e)}")
+            except Exception as e:
+                logger.warning(f"Webhook {event} failed: {str(e)}")
+
+            if attempt < max_attempts:
+                await asyncio.sleep(0.5 * attempt)
 
 
 # Singleton instance
