@@ -99,6 +99,8 @@ Docker compose mounts the repo into `/app` and runs uvicorn with `--reload` for 
 
 - `GET /health` - Health check with queue metrics
 - `POST /render` - Submit render job (returns immediately with job_id)
+- `POST /voiceover` - Synchronous script -> TTS voiceover upload (returns S3 location)
+- `POST /render-video` - Synchronous render using provided S3 voiceover + base video (+ optional BGM); returns S3 locations
 - `GET /status/{job_id}` - Check job status and get URLs
 - `GET /` - Service info and queue status
 
@@ -142,6 +144,7 @@ Webhook failures are logged but don't block processing (5s timeout, no retries).
 ### Subtitle Timing Dependency
 
 - Keep per-sentence WAVs on disk; `voice.wav` should be a copy, not a rename, so subtitle timing can ffprobe `sentence_###.wav` even for single-sentence scripts.
+- `/render-manual` generates per-sentence TTS audio for subtitle timing, then uses the provided voiceover for the final mix; subtitles may drift if the provided voice pacing differs.
 
 
 ### S3 Bucket Organization

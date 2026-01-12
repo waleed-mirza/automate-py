@@ -155,6 +155,58 @@ docker compose up --build -d
 
 Note: `voice_url`, `subtitles_url`, and `video_url` are S3 locations (`s3://bucket/key`). Generate presigned URLs on demand when you need HTTP access.
 
+### Generate Voiceover (Manual)
+
+**POST** `/voiceover`
+
+Processes the script synchronously and uploads `voice.wav` to S3.
+
+```json
+{
+  "script": "This is a short script. It will be turned into a voiceover."
+}
+```
+
+**Response**:
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
+  "error": null
+}
+```
+
+### Render with Provided Voiceover (Manual)
+
+**POST** `/render-video`
+
+Uses a provided voiceover and renders the final video synchronously.
+All media inputs must be `s3://bucket/key` locations.
+
+```json
+{
+  "script": "Hello world. This will be used for subtitles.",
+  "voiceover_url": "s3://automation-storage/uploads/voiceovers/example-voice.wav",
+  "base_video_url": "s3://automation-storage/uploads/renders/example-base.mp4",
+  "bgm_url": "s3://automation-storage/uploads/audio/example-bgm.mp3"
+}
+```
+
+**Response**:
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
+  "subtitles_url": "s3://automation-storage/uploads/subtitles/550e8400-e29b-41d4-a716-446655440000-subs.ass",
+  "video_url": "s3://automation-storage/uploads/renders/550e8400-e29b-41d4-a716-446655440000-final.mp4",
+  "error": null
+}
+```
+
+Note: Subtitles are generated using per-sentence TTS timing from the script. If the provided voiceover does not match the script pacing, subtitle alignment can drift.
+
 ### Health Check
 
 **GET** `/health`
