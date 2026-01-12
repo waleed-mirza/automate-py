@@ -88,9 +88,9 @@ class JobManager:
         Args:
             job_id: Job ID
             status: New status
-            voice_url: Optional voice URL
-            subtitles_url: Optional subtitles URL
-            video_url: Optional video URL
+            voice_url: Optional S3 location for voice audio
+            subtitles_url: Optional S3 location for subtitles
+            video_url: Optional S3 location for rendered video
             error: Optional error message
         """
         if job_id not in self.job_statuses:

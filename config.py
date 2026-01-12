@@ -19,15 +19,19 @@ class Settings(BaseSettings):
     webhook_url: str
 
     # Piper TTS configuration
+    piper_bin_path: str = "/usr/local/bin/piper"
     piper_model_path: str = "/usr/local/share/piper/en_US-lessac-medium.onnx"
 
     # Job concurrency settings
     max_concurrent_jobs: int = 3
 
     # S3 upload path prefixes
-    s3_voice_prefix: str = "uploads/voice"
+    s3_voice_prefix: str = "uploads/voiceovers"
     s3_subtitle_prefix: str = "uploads/subtitles"
-    s3_video_prefix: str = "uploads/videos"
+    s3_video_prefix: str = "uploads/renders"
+
+    # Signed URL configuration (seconds)
+    s3_signed_url_expiration_seconds: int = 3600
 
 
 settings = Settings()

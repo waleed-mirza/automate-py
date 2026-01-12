@@ -26,7 +26,7 @@ class WebhookService:
 
         Args:
             job_id: Job ID
-            voice_url: URL to uploaded voice.wav
+            voice_url: S3 location for uploaded voice.wav
         """
         payload = {
             "event": "voiceover_uploaded",
@@ -49,9 +49,9 @@ class WebhookService:
 
         Args:
             job_id: Job ID
-            voice_url: URL to uploaded voice.wav
-            subtitles_url: URL to uploaded subs.ass
-            video_url: URL to uploaded final.mp4
+            voice_url: S3 location for uploaded voice.wav
+            subtitles_url: S3 location for uploaded subs.ass
+            video_url: S3 location for uploaded final.mp4
         """
         payload = {
             "event": "video_completed",

@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 
 from src.utils.constants import DOWNLOAD_TIMEOUT_SECONDS, MAX_AUDIO_SIZE_MB
+from src.utils.s3_uploader import s3_uploader
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,11 @@ class AudioMixer:
         Returns:
             Path to downloaded BGM file
         """
-        logger.info(f"Downloading background music: {url}")
+        resolved_url = url
+        if s3_uploader.is_s3_location(url):
+            resolved_url = s3_uploader.get_presigned_url(url)
+
+        logger.info(f"Downloading background music: {resolved_url}")
 
         try:
             # Determine file extension from URL or default to mp3
@@ -81,7 +86,7 @@ class AudioMixer:
             downloaded_bytes = 0
 
             async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
-                async with client.stream("GET", url) as response:
+                async with client.stream("GET", resolved_url) as response:
                     response.raise_for_status()
 
                     with open(bgm_file, "wb") as f:

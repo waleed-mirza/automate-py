@@ -60,10 +60,12 @@ Required environment variables:
 BACKBLAZE_BUCKET_NAME=your-bucket-name
 BACKBLAZE_KEY_ID=your-key-id
 BACKBLAZE_APPLICATION_KEY=your-application-key
-BACKBLAZE_ENDPOINT_URL=https://s3.us-west-005.backblazeb2.com
+BACKBLAZE_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
 WEBHOOK_URL=https://your-webhook-endpoint.com/notify
+PIPER_BIN_PATH=/usr/local/bin/piper
 PIPER_MODEL_PATH=/usr/local/share/piper/en_US-lessac-medium.onnx
 MAX_CONCURRENT_JOBS=3
+S3_SIGNED_URL_EXPIRATION_SECONDS=3600
 ```
 
 ### Running the Service
@@ -95,6 +97,8 @@ docker compose up --build
 
 The API will be available at `http://localhost:8000`.
 
+This compose setup mounts the source and runs with `--reload`, so code changes restart the server automatically.
+
 ### Low-memory droplets (512 MiB)
 
 1. Enable swap on the droplet (recommended 1–2 GB).
@@ -110,18 +114,13 @@ docker compose up --build -d
 
 **POST** `/render`
 
+`base_video_url` and `bgm_url` accept either HTTP/HTTPS URLs or S3 locations in `s3://bucket/key` format. When you pass `s3://`, the service generates a presigned URL for download.
+
 ```json
 {
   "script": "Hello world. This is a test narration. Welcome to our video.",
-  "base_video_url": "https://example.com/video.mp4",
-  "bgm_url": "https://example.com/music.mp3",
-  "settings": {
-    "resolution": "1920x1080",
-    "subtitle_style": {
-      "font_name": "Arial",
-      "font_size": 24
-    }
-  }
+  "base_video_url": "s3://automation-storage/uploads/renders/example-base.mp4",
+  "bgm_url": "s3://automation-storage/uploads/audio/example-bgm.mp3",
 }
 ```
 
@@ -146,12 +145,15 @@ docker compose up --build -d
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "completed",
-  "voice_url": "https://s3.backblazeb2.com/bucket/uploads/voice/{job_id}/voice.wav",
-  "subtitles_url": "https://s3.backblazeb2.com/bucket/uploads/subtitles/{job_id}/subs.ass",
-  "video_url": "https://s3.backblazeb2.com/bucket/uploads/videos/{job_id}/final.mp4",
+  "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
+  "subtitles_url": "s3://automation-storage/uploads/subtitles/550e8400-e29b-41d4-a716-446655440000-subs.ass",
+  "video_url": "s3://automation-storage/uploads/renders/550e8400-e29b-41d4-a716-446655440000-final.mp4",
   "error": null
 }
 ```
+
+
+Note: `voice_url`, `subtitles_url`, and `video_url` are S3 locations (`s3://bucket/key`). Generate presigned URLs on demand when you need HTTP access.
 
 ### Health Check
 
@@ -184,7 +186,7 @@ Sent after voice.wav is uploaded to S3.
 {
   "event": "voiceover_uploaded",
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "voice_url": "https://s3.backblazeb2.com/...",
+  "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
   "timestamp": "2025-01-12T20:30:45Z"
 }
 ```
@@ -196,9 +198,9 @@ Sent after final video is rendered and uploaded.
 {
   "event": "video_completed",
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "voice_url": "https://s3.backblazeb2.com/...",
-  "subtitles_url": "https://s3.backblazeb2.com/...",
-  "video_url": "https://s3.backblazeb2.com/...",
+  "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
+  "subtitles_url": "s3://automation-storage/uploads/subtitles/550e8400-e29b-41d4-a716-446655440000-subs.ass",
+  "video_url": "s3://automation-storage/uploads/renders/550e8400-e29b-41d4-a716-446655440000-final.mp4",
   "timestamp": "2025-01-12T20:35:12Z"
 }
 ```
@@ -207,14 +209,14 @@ Sent after final video is rendered and uploaded.
 
 ### Processing Pipeline
 
-1. **Script Processing** → Split text into sentences (auto-merge < 5 words, auto-split > 20 words)
-2. **TTS Generation** → Generate audio per sentence using Piper TTS → Concatenate to `voice.wav`
-3. **S3 Upload** → Upload voice.wav → **Webhook: voiceover_uploaded**
-4. **Subtitle Generation** → Measure audio durations with ffprobe → Generate ASS subtitles
-5. **Audio Mixing** → Mix voice + BGM (BGM at 20% volume with fade-out)
-6. **Video Rendering** → Burn subtitles into video with FFmpeg
-7. **S3 Upload** → Upload subs.ass and final.mp4 → **Webhook: video_completed**
-8. **Cleanup** → Delete temporary files from `/tmp/{job_id}/`
+1. **Script Processing** -> Split text into sentences (auto-merge < 5 words, auto-split > 20 words)
+2. **TTS Generation** -> Generate audio per sentence using Piper TTS -> Concatenate to `voice.wav`
+3. **S3 Upload** -> Upload voice.wav -> Store `s3://bucket/key` -> **Webhook: voiceover_uploaded**
+4. **Subtitle Generation** -> Measure audio durations with ffprobe -> Generate ASS subtitles
+5. **Audio Mixing** -> Mix voice + BGM (BGM at 20% volume with fade-out)
+6. **Video Rendering** -> Burn subtitles into video with FFmpeg
+7. **S3 Upload** -> Upload subs.ass and final.mp4 -> Store `s3://bucket/key` -> **Webhook: video_completed**
+8. **Cleanup** -> Delete temporary files from `/tmp/{job_id}/`
 
 ### Job Queue System
 
@@ -227,10 +229,10 @@ Sent after final video is rendered and uploaded.
 
 ```
 bucket-name/
-├── uploads/
-│   ├── voice/{job_id}/voice.wav
-│   ├── subtitles/{job_id}/subs.ass
-│   └── videos/{job_id}/final.mp4
++-- uploads/
+�   +-- voiceovers/{uuid}-voice.wav
+�   +-- subtitles/{uuid}-subs.ass
+�   +-- renders/{uuid}-final.mp4
 ```
 
 ## Resource Limits
@@ -328,6 +330,13 @@ which piper
 # If not, check installation and PATH
 ```
 
+### Piper TTS Permission Denied
+If the log shows `Permission denied: 'piper'`, ensure the binary is executable:
+```bash
+chmod +x /usr/local/bin/piper
+```
+You can also set `PIPER_BIN_PATH` in `.env` to point at the correct executable.
+
 ### FFmpeg Issues
 ```bash
 ffmpeg -version
@@ -352,3 +361,10 @@ MIT License
 ## Support
 
 For issues and feature requests, please contact the development team.
+
+### Piper TTS Missing libespeak-ng
+If you see `error while loading shared libraries: libespeak-ng.so.1`, install the runtime library:
+```bash
+sudo apt-get update
+sudo apt-get install -y libespeak-ng1
+```

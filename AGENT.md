@@ -33,8 +33,8 @@ Python-based video rendering service that generates voiceover narration videos. 
 ### Input (HTTP endpoint)
 
 - `script`: Raw text (unsplit)
-- `base_video_url`: MP4 URL
-- `bgm_url`: Optional background music (MP3/WAV)
+- `base_video_url`: MP4 URL or `s3://bucket/key` location (service presigns for download)
+- `bgm_url`: Optional background music (MP3/WAV) URL or `s3://bucket/key` (service presigns for download)
 - Optional settings: subtitle style, pause duration, resolution
 
 ### Output (JSON)
@@ -87,6 +87,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Docker compose mounts the repo into `/app` and runs uvicorn with `--reload` for dev.
+
 ### Low-memory droplets (512 MiB)
 
 - Enable swap (1–2 GB).
@@ -137,13 +139,32 @@ Two webhook events sent to configured `WEBHOOK_URL`:
 
 Webhook failures are logged but don't block processing (5s timeout, no retries).
 
+### Subtitle Timing Dependency
+
+- Keep per-sentence WAVs on disk; `voice.wav` should be a copy, not a rename, so subtitle timing can ffprobe `sentence_###.wav` even for single-sentence scripts.
+
+
 ### S3 Bucket Organization
+
+- Store and return S3 locations in `s3://bucket/key` format (never HTTPS URLs).
+- Backblaze requires path-style addressing for S3 requests.
+- Key format: `uploads/{folder}/{uuid}-{filename}`.
+
+Folders:
+- voiceovers -> generated TTS audio
+- subtitles -> ASS subtitle files
+- renders -> final rendered videos
+
+### Signed URLs
+
+- Generate presigned URLs only on-demand (default 3600s) for HTTP access; never store them.
 
 ```
 bucket-name/
-├── uploads/voiceovers/{job_id}/voice.wav
-├── uploads/subtitles/{job_id}/subs.ass
-└── uploads/renders/{job_id}/final.mp4
++-- uploads/
+    +-- voiceovers/{uuid}-voice.wav
+    +-- subtitles/{uuid}-subs.ass
+    +-- renders/{uuid}-final.mp4
 ```
 
 ### Job States
@@ -152,6 +173,11 @@ bucket-name/
 - `processing` - Worker is processing the job
 - `completed` - All steps successful, URLs available
 - `failed` - Error occurred, error message in response
+
+### Piper Executable
+
+- `PIPER_BIN_PATH` env var overrides the Piper binary path (default `/usr/local/bin/piper`); service verifies the binary is executable at startup.
+- Piper binary requires `libespeak-ng1` runtime library in the container/host.
 
 ## Critical Constraints
 

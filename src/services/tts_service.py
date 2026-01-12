@@ -1,6 +1,8 @@
-import subprocess
 import logging
 import os
+import shutil
+import stat
+import subprocess
 from pathlib import Path
 
 from config import settings
@@ -17,6 +19,37 @@ class TTSService:
 
     def __init__(self):
         self.model_path = settings.piper_model_path
+        self.piper_path: str | None = None
+
+    def _resolve_piper_path(self) -> str:
+        """
+        Resolve the Piper binary path and ensure it is executable.
+        """
+        configured_path = getattr(settings, "piper_bin_path", None)
+        if configured_path:
+            path = Path(configured_path)
+            if not path.exists():
+                raise RuntimeError(
+                    f"Piper TTS binary not found at configured path: {configured_path}"
+                )
+            if not os.access(path, os.X_OK):
+                try:
+                    current_mode = path.stat().st_mode
+                    path.chmod(current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Piper TTS binary is not executable: {configured_path}. "
+                        "Fix permissions (chmod +x) or update PIPER_BIN_PATH."
+                    ) from exc
+            return str(path)
+
+        resolved = shutil.which("piper")
+        if not resolved:
+            raise RuntimeError(
+                "Piper TTS not found. Please install Piper and ensure it's in your PATH. "
+                f"Model path: {self.model_path}"
+            )
+        return resolved
 
     async def generate_voiceover(self, sentences: list[str], job_dir: Path) -> Path:
         """
@@ -55,10 +88,12 @@ class TTSService:
             output_path: Output WAV file path
         """
         try:
+            if not self.piper_path:
+                self.piper_path = self._resolve_piper_path()
             # Run Piper TTS
             # Command: echo "text" | piper --model model.onnx --output_file output.wav
             cmd = [
-                "piper",
+                self.piper_path,
                 "--model", self.model_path,
                 "--output_file", str(output_path)
             ]
@@ -85,6 +120,11 @@ class TTSService:
             if process.returncode != 0:
                 raise RuntimeError(f"Piper TTS failed: {stderr}")
 
+        except PermissionError as exc:
+            raise RuntimeError(
+                "Piper TTS is not executable. Check file permissions or set PIPER_BIN_PATH "
+                f"to a valid executable. Current: {self.piper_path}"
+            ) from exc
         except FileNotFoundError:
             raise RuntimeError(
                 "Piper TTS not found. Please install Piper and ensure it's in your PATH. "
@@ -105,8 +145,8 @@ class TTSService:
             raise ValueError("No audio files to concatenate")
 
         if len(audio_files) == 1:
-            # Just copy the single file
-            audio_files[0].rename(output_path)
+            # Copy the single file so per-sentence audio remains for subtitles
+            shutil.copyfile(audio_files[0], output_path)
             return
 
         try:

@@ -1,8 +1,8 @@
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 import logging
 from pathlib import Path
-from typing import Literal
 
 from config import settings
 
@@ -27,12 +27,61 @@ class S3Uploader:
                 endpoint_url=settings.backblaze_endpoint_url,
                 aws_access_key_id=settings.backblaze_key_id,
                 aws_secret_access_key=settings.backblaze_application_key,
+                config=Config(s3={"addressing_style": "path"}),
             )
             logger.info(f"S3 client configured for bucket: {self.bucket_name}")
             return client
         except Exception as e:
             logger.error(f"Failed to create S3 client: {str(e)}")
             raise RuntimeError(f"S3 client initialization failed: {str(e)}")
+
+    @staticmethod
+    def is_s3_location(location: str) -> bool:
+        """Return True when the location is an s3://bucket/key string."""
+        return isinstance(location, str) and location.startswith("s3://")
+
+    @staticmethod
+    def _parse_s3_location(location: str) -> tuple[str, str]:
+        """
+        Parse an s3://bucket/key location into (bucket, key).
+
+        Raises ValueError if the format is invalid.
+        """
+        if not S3Uploader.is_s3_location(location):
+            raise ValueError("S3 location must start with s3://")
+
+        stripped = location[len("s3://"):]
+        parts = stripped.split("/", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError("S3 location must be in s3://bucket/key format")
+
+        return parts[0], parts[1]
+
+    def get_presigned_url(self, s3_location: str, expires_in: int | None = None) -> str:
+        """
+        Generate a presigned URL for an s3://bucket/key location.
+
+        Args:
+            s3_location: S3 location (s3://bucket/key)
+            expires_in: Optional expiration override in seconds
+        """
+        bucket, key = self._parse_s3_location(s3_location)
+        expiry = expires_in or settings.s3_signed_url_expiration_seconds
+
+        try:
+            return self.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": key},
+                ExpiresIn=expiry,
+            )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_msg = e.response.get("Error", {}).get("Message", str(e))
+            logger.error(f"Presigned URL generation failed ({error_code}): {error_msg}")
+            raise RuntimeError(f"Failed to generate presigned URL: {error_msg}")
+        except Exception as e:
+            logger.error(f"Unexpected error generating presigned URL: {str(e)}")
+            raise RuntimeError(f"Presigned URL error: {str(e)}")
 
     async def upload_voice(self, file_path: Path, job_id: str) -> str:
         """
@@ -43,9 +92,9 @@ class S3Uploader:
             job_id: Job ID for organizing files
 
         Returns:
-            Public URL to uploaded file
+            S3 location (s3://bucket/key)
         """
-        object_key = f"{settings.s3_voice_prefix}/{job_id}/voice.wav"
+        object_key = f"{settings.s3_voice_prefix}/{job_id}-{file_path.name}"
         return await self._upload_file(file_path, object_key, "audio/wav")
 
     async def upload_subtitle(self, file_path: Path, job_id: str) -> str:
@@ -57,9 +106,9 @@ class S3Uploader:
             job_id: Job ID for organizing files
 
         Returns:
-            Public URL to uploaded file
+            S3 location (s3://bucket/key)
         """
-        object_key = f"{settings.s3_subtitle_prefix}/{job_id}/subs.ass"
+        object_key = f"{settings.s3_subtitle_prefix}/{job_id}-{file_path.name}"
         return await self._upload_file(file_path, object_key, "text/plain")
 
     async def upload_video(self, file_path: Path, job_id: str) -> str:
@@ -71,9 +120,9 @@ class S3Uploader:
             job_id: Job ID for organizing files
 
         Returns:
-            Public URL to uploaded file
+            S3 location (s3://bucket/key)
         """
-        object_key = f"{settings.s3_video_prefix}/{job_id}/final.mp4"
+        object_key = f"{settings.s3_video_prefix}/{job_id}-{file_path.name}"
         return await self._upload_file(file_path, object_key, "video/mp4")
 
     async def _upload_file(
@@ -91,7 +140,7 @@ class S3Uploader:
             content_type: MIME type of file
 
         Returns:
-            Public URL to uploaded file
+            S3 location (s3://bucket/key)
         """
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -108,11 +157,10 @@ class S3Uploader:
                     ContentType=content_type,
                 )
 
-            # Generate public URL
-            url = f"{settings.backblaze_endpoint_url}/{self.bucket_name}/{object_key}"
+            s3_location = f"s3://{self.bucket_name}/{object_key}"
 
-            logger.info(f"Upload successful: {url}")
-            return url
+            logger.info("Upload successful (stored as S3 location)")
+            return s3_location
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")

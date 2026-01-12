@@ -23,8 +23,14 @@ class RenderSettings(BaseModel):
 class RenderRequest(BaseModel):
     """Request model for /render endpoint"""
     script: str = Field(..., description="Raw text script to process")
-    base_video_url: str = Field(..., description="URL to base video (MP4)")
-    bgm_url: Optional[str] = Field(None, description="Optional background music URL")
+    base_video_url: str = Field(
+        ...,
+        description="Base video URL (HTTP/HTTPS or s3://bucket/key)"
+    )
+    bgm_url: Optional[str] = Field(
+        None,
+        description="Optional background music URL (HTTP/HTTPS or s3://bucket/key)"
+    )
     settings: Optional[RenderSettings] = None
 
 
@@ -62,11 +68,17 @@ async def render_video(request: RenderRequest):
         raise HTTPException(status_code=400, detail="Script cannot be empty")
 
     # Validate URLs
-    if not request.base_video_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="base_video_url must be a valid HTTP/HTTPS URL")
+    if not request.base_video_url.startswith(("http://", "https://", "s3://")):
+        raise HTTPException(
+            status_code=400,
+            detail="base_video_url must be HTTP/HTTPS or s3://bucket/key"
+        )
 
-    if request.bgm_url and not request.bgm_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="bgm_url must be a valid HTTP/HTTPS URL")
+    if request.bgm_url and not request.bgm_url.startswith(("http://", "https://", "s3://")):
+        raise HTTPException(
+            status_code=400,
+            detail="bgm_url must be HTTP/HTTPS or s3://bucket/key"
+        )
 
     # Create job
     job = RenderJob(
@@ -96,7 +108,7 @@ async def get_job_status(job_id: str):
     """
     Get the status of a render job.
 
-    Returns job status and URLs when available.
+    Returns job status and S3 locations when available.
     """
     job_manager = get_job_manager()
     job_status = job_manager.get_job_status(job_id)
