@@ -141,9 +141,9 @@ Webhook failures are logged but don't block processing (5s timeout, no retries).
 
 ```
 bucket-name/
-├── uploads/voice/{job_id}/voice.wav
+├── uploads/voiceovers/{job_id}/voice.wav
 ├── uploads/subtitles/{job_id}/subs.ass
-└── uploads/videos/{job_id}/final.mp4
+└── uploads/renders/{job_id}/final.mp4
 ```
 
 ### Job States

@@ -60,7 +60,7 @@ Required environment variables:
 BACKBLAZE_BUCKET_NAME=your-bucket-name
 BACKBLAZE_KEY_ID=your-key-id
 BACKBLAZE_APPLICATION_KEY=your-application-key
-BACKBLAZE_ENDPOINT_URL=https://s3.us-west-002.backblazeb2.com
+BACKBLAZE_ENDPOINT_URL=https://s3.us-west-005.backblazeb2.com
 WEBHOOK_URL=https://your-webhook-endpoint.com/notify
 PIPER_MODEL_PATH=/usr/local/share/piper/en_US-lessac-medium.onnx
 MAX_CONCURRENT_JOBS=3

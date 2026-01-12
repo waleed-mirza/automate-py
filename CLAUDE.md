@@ -44,7 +44,9 @@ URLs for uploaded artifacts: `voice.wav`, `subs.ass`, `final.mp4`
 ## Development Commands
 
 ### Setup
+
 1. Install system dependencies:
+
    ```bash
    # Ubuntu/Debian
    sudo apt-get update
@@ -57,6 +59,7 @@ URLs for uploaded artifacts: `voice.wav`, `subs.ass`, `final.mp4`
    ```
 
 2. Install Python dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
@@ -68,6 +71,7 @@ URLs for uploaded artifacts: `voice.wav`, `subs.ass`, `final.mp4`
    ```
 
 ### Running the Server
+
 ```bash
 # Development mode with auto-reload
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -76,7 +80,21 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
+### Docker (Docker Desktop)
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+### Low-memory droplets (512 MiB)
+
+- Enable swap (1–2 GB).
+- Keep concurrency at 1 (default in docker-compose).
+- Start with `docker compose up --build -d`.
+
 ### API Endpoints
+
 - `GET /health` - Health check with queue metrics
 - `POST /render` - Submit render job (returns immediately with job_id)
 - `GET /status/{job_id}` - Check job status and get URLs
@@ -85,6 +103,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 ## Implementation Details
 
 ### Project Structure
+
 ```
 automation-python-server/
 ├── main.py                      # FastAPI app with worker lifecycle
@@ -110,6 +129,7 @@ automation-python-server/
 ```
 
 ### Webhooks
+
 Two webhook events sent to configured `WEBHOOK_URL`:
 
 1. **voiceover_uploaded** - After voice.wav uploaded to S3
@@ -118,14 +138,16 @@ Two webhook events sent to configured `WEBHOOK_URL`:
 Webhook failures are logged but don't block processing (5s timeout, no retries).
 
 ### S3 Bucket Organization
+
 ```
 bucket-name/
-├── uploads/voice/{job_id}/voice.wav
+├── uploads/voiceovers/{job_id}/voice.wav
 ├── uploads/subtitles/{job_id}/subs.ass
-└── uploads/videos/{job_id}/final.mp4
+└── uploads/renders/{job_id}/final.mp4
 ```
 
 ### Job States
+
 - `queued` - Job added to queue, waiting for worker
 - `processing` - Worker is processing the job
 - `completed` - All steps successful, URLs available
