@@ -1,0 +1,12 @@
+.git
+.claude
+__pycache__
+*.pyc
+.env
+.venv
+venv
+tmp
+*.log
+*.mp4
+*.wav
+*.ass

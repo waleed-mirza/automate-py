@@ -78,6 +78,32 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
+## Docker
+
+### Build and Run (Docker Desktop)
+
+1. Create your `.env` file:
+```bash
+cp .env.example .env
+# Edit .env with your settings
+```
+
+2. Build and run:
+```bash
+docker compose up --build
+```
+
+The API will be available at `http://localhost:8000`.
+
+### Low-memory droplets (512 MiB)
+
+1. Enable swap on the droplet (recommended 1–2 GB).
+2. Keep concurrency at 1 (default in `docker-compose.yml`).
+3. Start the service:
+```bash
+docker compose up --build -d
+```
+
 ## API Usage
 
 ### Submit a Render Job
