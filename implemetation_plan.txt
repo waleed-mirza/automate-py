@@ -1,0 +1,68 @@
+Goal
+Build a Python-based render service that accepts a script, base video url, and background music, then returns:
+
+a voiceover audio file
+
+a sentence-synced .ass subtitle file
+
+a final rendered MP4 video
+
+The service must be cheap, reliable, and optimized for a low-resource droplet.
+
+Functional Requirements
+
+Input (HTTP API)
+
+script (raw text, unsplit)
+
+base_video_url (MP4)
+
+bgm_url (optional MP3/WAV)
+
+optional settings: subtitle style, pause duration, resolution
+
+Processing (Python)
+
+Normalize and split script into readable sentences
+
+Auto-merge very short sentences
+
+Auto-split very long sentences
+
+Generate TTS per sentence using Piper
+
+Concatenate sentence audio into a single voice.wav
+
+Use ffprobe to measure real audio durations
+
+Generate sentence-level .ass subtitles from durations (no Whisper)
+
+Mix voice + background music (music lowered, optional fade-out)
+
+Render final video with FFmpeg (burn ASS subtitles)
+
+Output
+
+Upload artifacts to object storage (S3 bucket from backblaze):
+
+voice.wav
+
+subs.ass
+
+final.mp4
+
+Return URLs in JSON response
+
+Tech Constraints
+
+Python 3.10+
+
+FFmpeg + ffprobe
+
+Piper TTS (CPU only)
+
+FastAPI (or similar)
+
+3 jobs at a time (queue-friendly)
+
+Works on $4–$6 VPS with swap enabled
