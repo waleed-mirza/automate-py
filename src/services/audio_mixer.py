@@ -14,7 +14,7 @@ class AudioMixer:
     Mixes voiceover audio with background music.
     """
 
-    def __init__(self, bgm_volume: float = 0.2, enable_fadeout: bool = True):
+    def __init__(self, bgm_volume: float = 0.5, enable_fadeout: bool = True):
         """
         Args:
             bgm_volume: Background music volume (0.0-1.0), default 0.2 (20%)

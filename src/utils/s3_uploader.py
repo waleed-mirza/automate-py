@@ -3,6 +3,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
 from config import settings
 
@@ -19,15 +20,44 @@ class S3Uploader:
         self.bucket_name = settings.backblaze_bucket_name
         self.client = self._create_s3_client()
 
+    @staticmethod
+    def _infer_region_from_endpoint(endpoint_url: str) -> str | None:
+        """
+        Best-effort extraction of region from Backblaze S3 endpoint.
+
+        Example: https://s3.us-east-005.backblazeb2.com -> us-east-005
+        """
+        if not endpoint_url:
+            return None
+
+        try:
+            host = urlparse(endpoint_url).hostname or ""
+        except Exception:
+            return None
+
+        marker = "s3."
+        suffix = ".backblazeb2.com"
+        if host.startswith(marker) and host.endswith(suffix):
+            return host[len(marker):-len(suffix)]
+
+        return None
+
     def _create_s3_client(self):
         """Create and configure boto3 S3 client for Backblaze B2"""
         try:
+            region_name = self._infer_region_from_endpoint(
+                settings.backblaze_endpoint_url
+            )
             client = boto3.client(
                 "s3",
                 endpoint_url=settings.backblaze_endpoint_url,
                 aws_access_key_id=settings.backblaze_key_id,
                 aws_secret_access_key=settings.backblaze_application_key,
-                config=Config(s3={"addressing_style": "path"}),
+                region_name=region_name,
+                config=Config(
+                    signature_version="s3v4",
+                    s3={"addressing_style": "path"},
+                ),
             )
             logger.info(f"S3 client configured for bucket: {self.bucket_name}")
             return client

@@ -161,6 +161,7 @@ Folders:
 ### Signed URLs
 
 - Generate presigned URLs only on-demand (default 3600s) for HTTP access; never store them.
+- Backblaze B2 presigned URLs must use SigV4; client is configured with `signature_version="s3v4"` and region inferred from the endpoint host when possible.
 
 ```
 bucket-name/
