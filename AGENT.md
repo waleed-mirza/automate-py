@@ -13,7 +13,7 @@ Python-based video rendering service that generates voiceover narration videos. 
 ### Core Pipeline
 
 1. **Script Processing**: Normalize and split raw text into sentences (auto-merge short, auto-split long)
-2. **TTS Generation**: Use Piper TTS (CPU-only) to generate audio per sentence → concatenate to `voice.wav`
+2. **TTS Generation**: Use selected TTS provider (Piper or Kokoro, CPU-only) to generate audio per sentence → concatenate to `voice.wav`
 3. **Subtitle Sync**: Use ffprobe to measure audio durations → generate sentence-level `.ass` subtitles (no Whisper)
 4. **Audio Mixing**: Combine voice + background music (lower BGM volume, optional fade-out)
 5. **Video Rendering**: FFmpeg burns ASS subtitles into base video with mixed audio
@@ -24,7 +24,7 @@ Python-based video rendering service that generates voiceover narration videos. 
 
 - **Python**: 3.10+
 - **Web Framework**: FastAPI
-- **TTS**: Piper (CPU-only, optimized for low-resource)
+- **TTS**: Piper or Kokoro (CPU-only, optimized for low-resource)
 - **Video Processing**: FFmpeg + ffprobe
 - **Storage**: Backblaze B2 (S3-compatible)
 - **Concurrency**: Queue-based, max 3 jobs simultaneously
@@ -120,7 +120,7 @@ automation-python-server/
     │   └── routes.py           # API endpoints (render, status)
     ├── services/
     │   ├── script_processor.py # Sentence splitting logic
-    │   ├── tts_service.py      # Piper TTS integration
+    │   ├── tts_service.py      # Piper/Kokoro TTS integration
     │   ├── subtitle_service.py # ASS subtitle generation
     │   ├── audio_mixer.py      # Voice + BGM mixing
     │   ├── video_renderer.py   # FFmpeg video rendering
@@ -186,6 +186,12 @@ bucket-name/
 
 - `PIPER_BIN_PATH` env var overrides the Piper binary path (default `/usr/local/bin/piper`); service verifies the binary is executable at startup.
 - Piper binary requires `libespeak-ng1` runtime library in the container/host.
+
+### TTS Provider Selection
+
+- `TTS_PROVIDER` chooses between `piper` and `kokoro` (default `kokoro`).
+- Kokoro uses `KOKORO_MODEL_PATH` (default `/usr/local/share/kokoro/kokoro-v1.0.onnx`) and `KOKORO_VOICES_PATH` (default `/usr/local/share/kokoro/voices/voices-v1.0.bin`).
+- Kokoro requires `libsndfile1` for WAV output.
 
 ## Critical Constraints
 

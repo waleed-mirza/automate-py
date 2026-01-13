@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg wget ca-certificates libespeak-ng1 espeak-ng-data \
+    && apt-get install -y --no-install-recommends ffmpeg wget ca-certificates libespeak-ng1 espeak-ng-data libsndfile1 \
     && mkdir -p /usr/share/espeak-ng-data \
     && if [ -f /usr/share/espeak-ng-data/phontab ]; then true; \
        else \
@@ -31,6 +31,13 @@ RUN mkdir -p /usr/local/share/piper \
         https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx \
     && wget -O /usr/local/share/piper/en_US-lessac-medium.onnx.json \
         https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+
+# Install Kokoro model files
+RUN mkdir -p /usr/local/share/kokoro/voices \
+    && wget -O /usr/local/share/kokoro/kokoro-v1.0.onnx \
+        https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx \
+    && wget -O /usr/local/share/kokoro/voices/voices-v1.0.bin \
+        https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
 
 WORKDIR /app
 

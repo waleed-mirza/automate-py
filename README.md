@@ -4,7 +4,7 @@ Python-based video rendering service that generates voiceover narration videos w
 
 ## Features
 
-- **Text-to-Speech**: Piper TTS (CPU-only, en_US-lessac-medium voice)
+- **Text-to-Speech**: Piper or Kokoro (CPU-only, low-resource friendly)
 - **Script Processing**: Intelligent sentence splitting with auto-merge/split
 - **Subtitle Generation**: Sentence-synced ASS subtitles with timing from audio duration
 - **Audio Mixing**: Voice + background music with volume balancing
@@ -21,7 +21,7 @@ Python-based video rendering service that generates voiceover narration videos w
 
 - Python 3.10+
 - FFmpeg and ffprobe
-- Piper TTS binary and model
+- Piper TTS binary and model or Kokoro model/voices
 - Backblaze B2 account
 
 ### Installation
@@ -45,12 +45,21 @@ wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/me
   -O /usr/local/share/piper/en_US-lessac-medium.onnx
 ```
 
-3. **Install Python dependencies**:
+3. **(Optional) Install Kokoro model files**:
+```bash
+mkdir -p /usr/local/share/kokoro/voices
+wget https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx \
+  -O /usr/local/share/kokoro/kokoro-v1.0.onnx
+wget https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin \
+  -O /usr/local/share/kokoro/voices/voices-v1.0.bin
+```
+
+4. **Install Python dependencies**:
 ```bash
 pip install -r requirements.txt
 ```
 
-4. **Configure environment**:
+5. **Configure environment**:
 ```bash
 cp .env.example .env
 # Edit .env with your settings
@@ -63,8 +72,14 @@ BACKBLAZE_KEY_ID=your-key-id
 BACKBLAZE_APPLICATION_KEY=your-application-key
 BACKBLAZE_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
 WEBHOOK_URL=http://localhost:3000/api/webhooks/python-render
+TTS_PROVIDER=kokoro
 PIPER_BIN_PATH=/usr/local/bin/piper
 PIPER_MODEL_PATH=/usr/local/share/piper/en_US-lessac-medium.onnx
+PIPER_THREADS=2
+KOKORO_MODEL_PATH=/usr/local/share/kokoro/kokoro-v1.0.onnx
+KOKORO_VOICES_PATH=/usr/local/share/kokoro/voices/voices-v1.0.bin
+KOKORO_SPEAKER=af_bella
+KOKORO_THREADS=2
 MAX_CONCURRENT_JOBS=3
 S3_SIGNED_URL_EXPIRATION_SECONDS=3600
 S3_THUMBNAIL_PREFIX=uploads/thumbnails
@@ -269,7 +284,7 @@ Sent after final video is rendered and uploaded (includes `thumbnail_url`, may b
 ### Processing Pipeline
 
 1. **Script Processing** -> Split text into sentences (auto-merge < 5 words, auto-split > 20 words)
-2. **TTS Generation** -> Generate audio per sentence using Piper TTS -> Concatenate to `voice.wav`
+2. **TTS Generation** -> Generate audio per sentence using selected TTS provider (Piper or Kokoro) -> Concatenate to `voice.wav`
 3. **S3 Upload** -> Upload voice.wav -> Store `s3://bucket/key` -> **Webhook: voiceover_uploaded**
 4. **Subtitle Generation** -> Measure audio durations with ffprobe -> Generate ASS subtitles
 5. **Audio Mixing** -> Mix voice + BGM (BGM at 20% volume with fade-out)

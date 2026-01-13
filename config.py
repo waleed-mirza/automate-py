@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     # Piper TTS configuration
     piper_bin_path: str = "/usr/local/bin/piper"
     piper_model_path: str = "/usr/local/share/piper/en_US-lessac-medium.onnx"
+    piper_threads: int = 2
+
+    # TTS provider selection
+    tts_provider: str = "kokoro"
+
+    # Kokoro TTS configuration
+    kokoro_model_path: str = "/usr/local/share/kokoro/kokoro-v1.0.onnx"
+    kokoro_voices_path: str = "/usr/local/share/kokoro/voices/voices-v1.0.bin"
+    kokoro_speaker: str = "af_bella"
+    kokoro_threads: int = 2
 
     # Job concurrency settings
     max_concurrent_jobs: int = 3
