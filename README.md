@@ -9,6 +9,7 @@ Python-based video rendering service that generates voiceover narration videos w
 - **Subtitle Generation**: Sentence-synced ASS subtitles with timing from audio duration
 - **Audio Mixing**: Voice + background music with volume balancing
 - **Video Rendering**: FFmpeg-based rendering with burned subtitles
+- **Thumbnail Generation**: Extracts a representative frame from the final video
 - **Cloud Storage**: Automatic upload to Backblaze B2 (S3-compatible)
 - **Webhook Notifications**: Real-time progress updates
 - **Job Queue**: Asynchronous processing with 3 concurrent job limit
@@ -61,11 +62,12 @@ BACKBLAZE_BUCKET_NAME=your-bucket-name
 BACKBLAZE_KEY_ID=your-key-id
 BACKBLAZE_APPLICATION_KEY=your-application-key
 BACKBLAZE_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
-WEBHOOK_URL=https://your-webhook-endpoint.com/notify
+WEBHOOK_URL=http://localhost:3000/api/webhooks/python-render
 PIPER_BIN_PATH=/usr/local/bin/piper
 PIPER_MODEL_PATH=/usr/local/share/piper/en_US-lessac-medium.onnx
 MAX_CONCURRENT_JOBS=3
 S3_SIGNED_URL_EXPIRATION_SECONDS=3600
+S3_THUMBNAIL_PREFIX=uploads/thumbnails
 ```
 
 ### Running the Service
@@ -132,6 +134,7 @@ docker compose up --build -d
   "voice_url": null,
   "subtitles_url": null,
   "video_url": null,
+  "thumbnail_url": null,
   "error": null
 }
 ```
@@ -148,12 +151,13 @@ docker compose up --build -d
   "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
   "subtitles_url": "s3://automation-storage/uploads/subtitles/550e8400-e29b-41d4-a716-446655440000-subs.ass",
   "video_url": "s3://automation-storage/uploads/renders/550e8400-e29b-41d4-a716-446655440000-final.mp4",
+  "thumbnail_url": "s3://automation-storage/uploads/thumbnails/550e8400-e29b-41d4-a716-446655440000-thumbnail.jpg",
   "error": null
 }
 ```
 
 
-Note: `voice_url`, `subtitles_url`, and `video_url` are S3 locations (`s3://bucket/key`). Generate presigned URLs on demand when you need HTTP access.
+Note: `voice_url`, `subtitles_url`, `video_url`, and `thumbnail_url` are S3 locations (`s3://bucket/key`). Generate presigned URLs on demand when you need HTTP access.
 
 ### Generate Voiceover (Manual)
 
@@ -201,11 +205,13 @@ All media inputs must be `s3://bucket/key` locations.
   "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
   "subtitles_url": "s3://automation-storage/uploads/subtitles/550e8400-e29b-41d4-a716-446655440000-subs.ass",
   "video_url": "s3://automation-storage/uploads/renders/550e8400-e29b-41d4-a716-446655440000-final.mp4",
+  "thumbnail_url": "s3://automation-storage/uploads/thumbnails/550e8400-e29b-41d4-a716-446655440000-thumbnail.jpg",
   "error": null
 }
 ```
 
 Note: Subtitles are generated using per-sentence TTS timing from the script. If the provided voiceover does not match the script pacing, subtitle alignment can drift.
+Note: `thumbnail_url` may be null if thumbnail generation fails (video rendering still completes).
 
 ### Health Check
 
@@ -244,7 +250,7 @@ Sent after voice.wav is uploaded to S3.
 ```
 
 ### 2. Video Completed
-Sent after final video is rendered and uploaded.
+Sent after final video is rendered and uploaded (includes `thumbnail_url`, may be null).
 
 ```json
 {
@@ -253,6 +259,7 @@ Sent after final video is rendered and uploaded.
   "voice_url": "s3://automation-storage/uploads/voiceovers/550e8400-e29b-41d4-a716-446655440000-voice.wav",
   "subtitles_url": "s3://automation-storage/uploads/subtitles/550e8400-e29b-41d4-a716-446655440000-subs.ass",
   "video_url": "s3://automation-storage/uploads/renders/550e8400-e29b-41d4-a716-446655440000-final.mp4",
+  "thumbnail_url": "s3://automation-storage/uploads/thumbnails/550e8400-e29b-41d4-a716-446655440000-thumbnail.jpg",
   "timestamp": "2025-01-12T20:35:12Z"
 }
 ```
@@ -267,8 +274,9 @@ Sent after final video is rendered and uploaded.
 4. **Subtitle Generation** -> Measure audio durations with ffprobe -> Generate ASS subtitles
 5. **Audio Mixing** -> Mix voice + BGM (BGM at 20% volume with fade-out)
 6. **Video Rendering** -> Burn subtitles into video with FFmpeg
-7. **S3 Upload** -> Upload subs.ass and final.mp4 -> Store `s3://bucket/key` -> **Webhook: video_completed**
-8. **Cleanup** -> Delete temporary files from `/tmp/{job_id}/`
+7. **Thumbnail Generation** -> Extract a frame at ~10% duration (min 1s), upload JPEG (non-blocking)
+8. **S3 Upload** -> Upload subs.ass and final.mp4 -> Store `s3://bucket/key` -> **Webhook: video_completed**
+9. **Cleanup** -> Delete temporary files from `/tmp/{job_id}/`
 
 ### Job Queue System
 
@@ -285,6 +293,7 @@ bucket-name/
 �   +-- voiceovers/{uuid}-voice.wav
 �   +-- subtitles/{uuid}-subs.ass
 �   +-- renders/{uuid}-final.mp4
+�   +-- thumbnails/{uuid}-thumbnail.jpg
 ```
 
 ## Resource Limits
@@ -356,6 +365,7 @@ automation-python-server/
     │   ├── subtitle_service.py
     │   ├── audio_mixer.py
     │   ├── video_renderer.py
+    │   ├── thumbnail_service.py
     │   └── webhook_service.py
     └── utils/                  # Utilities
         ├── s3_uploader.py

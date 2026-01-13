@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     s3_voice_prefix: str = "uploads/voiceovers"
     s3_subtitle_prefix: str = "uploads/subtitles"
     s3_video_prefix: str = "uploads/renders"
+    s3_thumbnail_prefix: str = "uploads/thumbnails"
 
     # Signed URL configuration (seconds)
     s3_signed_url_expiration_seconds: int = 3600

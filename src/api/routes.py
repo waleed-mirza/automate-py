@@ -22,6 +22,7 @@ from src.services.tts_service import tts_service
 from src.services.subtitle_service import subtitle_service
 from src.services.audio_mixer import audio_mixer
 from src.services.video_renderer import video_renderer
+from src.services.thumbnail_service import thumbnail_service
 from src.utils.s3_uploader import s3_uploader
 from src.utils.file_manager import file_manager
 
@@ -88,6 +89,7 @@ class RenderResponse(BaseModel):
     voice_url: Optional[str] = None
     subtitles_url: Optional[str] = None
     video_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -353,13 +355,21 @@ async def render_video_manual(request: ManualRenderRequest):
         subtitles_url = await s3_uploader.upload_subtitle(subtitle_file, job_id)
         video_url = await s3_uploader.upload_video(final_video, job_id)
 
+        thumbnail_url = None
+        try:
+            thumbnail_file = await thumbnail_service.generate_thumbnail(final_video, job_dir)
+            thumbnail_url = await s3_uploader.upload_thumbnail(thumbnail_file, job_id)
+        except Exception as e:
+            logger.warning(f"Thumbnail generation failed for job {job_id}: {str(e)}")
+
         job_succeeded = True
         return RenderResponse(
             job_id=job_id,
             status="completed",
             voice_url=voice_url,
             subtitles_url=subtitles_url,
-            video_url=video_url
+            video_url=video_url,
+            thumbnail_url=thumbnail_url
         )
 
     except Exception as e:
@@ -392,6 +402,7 @@ async def get_job_status(job_id: str):
         voice_url=job_status.voice_url,
         subtitles_url=job_status.subtitles_url,
         video_url=job_status.video_url,
+        thumbnail_url=job_status.thumbnail_url,
         error=job_status.error
     )
 

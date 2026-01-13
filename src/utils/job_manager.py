@@ -15,6 +15,7 @@ class JobStatus:
     voice_url: Optional[str] = None
     subtitles_url: Optional[str] = None
     video_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
     error: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -80,6 +81,7 @@ class JobManager:
         voice_url: Optional[str] = None,
         subtitles_url: Optional[str] = None,
         video_url: Optional[str] = None,
+        thumbnail_url: Optional[str] = None,
         error: Optional[str] = None
     ):
         """
@@ -91,6 +93,7 @@ class JobManager:
             voice_url: Optional S3 location for voice audio
             subtitles_url: Optional S3 location for subtitles
             video_url: Optional S3 location for rendered video
+            thumbnail_url: Optional S3 location for thumbnail image
             error: Optional error message
         """
         if job_id not in self.job_statuses:
@@ -107,6 +110,8 @@ class JobManager:
             job_status.subtitles_url = subtitles_url
         if video_url is not None:
             job_status.video_url = video_url
+        if thumbnail_url is not None:
+            job_status.thumbnail_url = thumbnail_url
         if error is not None:
             job_status.error = error
 

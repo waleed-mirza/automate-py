@@ -2,7 +2,7 @@ import httpx
 import logging
 import asyncio
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 from config import settings
 from src.utils.constants import WEBHOOK_RETRY_ATTEMPTS, WEBHOOK_TIMEOUT
@@ -42,7 +42,8 @@ class WebhookService:
         job_id: str,
         voice_url: str,
         subtitles_url: str,
-        video_url: str
+        video_url: str,
+        thumbnail_url: Optional[str] = None
     ):
         """
         Send webhook notification when video rendering is complete.
@@ -52,6 +53,7 @@ class WebhookService:
             voice_url: S3 location for uploaded voice.wav
             subtitles_url: S3 location for uploaded subs.ass
             video_url: S3 location for uploaded final.mp4
+            thumbnail_url: Optional S3 location for thumbnail image
         """
         payload = {
             "event": "video_completed",
@@ -59,6 +61,7 @@ class WebhookService:
             "voice_url": voice_url,
             "subtitles_url": subtitles_url,
             "video_url": video_url,
+            "thumbnail_url": thumbnail_url,
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
 

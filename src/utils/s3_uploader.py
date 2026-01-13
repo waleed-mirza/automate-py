@@ -155,6 +155,20 @@ class S3Uploader:
         object_key = f"{settings.s3_video_prefix}/{job_id}-{file_path.name}"
         return await self._upload_file(file_path, object_key, "video/mp4")
 
+    async def upload_thumbnail(self, file_path: Path, job_id: str) -> str:
+        """
+        Upload thumbnail.jpg to S3.
+
+        Args:
+            file_path: Path to thumbnail image
+            job_id: Job ID for organizing files
+
+        Returns:
+            S3 location (s3://bucket/key)
+        """
+        object_key = f"{settings.s3_thumbnail_prefix}/{job_id}-{file_path.name}"
+        return await self._upload_file(file_path, object_key, "image/jpeg")
+
     async def _upload_file(
         self,
         file_path: Path,

@@ -17,7 +17,8 @@ Python-based video rendering service that generates voiceover narration videos. 
 3. **Subtitle Sync**: Use ffprobe to measure audio durations → generate sentence-level `.ass` subtitles (no Whisper)
 4. **Audio Mixing**: Combine voice + background music (lower BGM volume, optional fade-out)
 5. **Video Rendering**: FFmpeg burns ASS subtitles into base video with mixed audio
-6. **Upload**: Push artifacts (`voice.wav`, `subs.ass`, `final.mp4`) to Backblaze S3, return URLs
+6. **Thumbnail**: FFmpeg extracts a frame at ~10% duration (min 1s) from `final.mp4`, uploads thumbnail JPEG
+7. **Upload**: Push artifacts (`voice.wav`, `subs.ass`, `final.mp4`, `thumbnail.jpg`) to Backblaze S3, return URLs
 
 ### Tech Stack
 
@@ -39,7 +40,7 @@ Python-based video rendering service that generates voiceover narration videos. 
 
 ### Output (JSON)
 
-URLs for uploaded artifacts: `voice.wav`, `subs.ass`, `final.mp4`
+URLs for uploaded artifacts: `voice.wav`, `subs.ass`, `final.mp4`, `thumbnail.jpg`
 
 ## Development Commands
 
@@ -123,6 +124,7 @@ automation-python-server/
     │   ├── subtitle_service.py # ASS subtitle generation
     │   ├── audio_mixer.py      # Voice + BGM mixing
     │   ├── video_renderer.py   # FFmpeg video rendering
+    │   ├── thumbnail_service.py # FFmpeg thumbnail extraction
     │   └── webhook_service.py  # Webhook notifications
     └── utils/
         ├── s3_uploader.py      # Backblaze B2 uploads
@@ -137,7 +139,7 @@ automation-python-server/
 Two webhook events sent to configured `WEBHOOK_URL`:
 
 1. **voiceover_uploaded** - After voice.wav uploaded to S3
-2. **video_completed** - After final.mp4 uploaded to S3
+2. **video_completed** - After final.mp4 uploaded to S3 (includes `thumbnail_url`, may be null)
 
 Webhook failures are logged but don't block processing (5s timeout, no retries).
 
@@ -157,6 +159,7 @@ Folders:
 - voiceovers -> generated TTS audio
 - subtitles -> ASS subtitle files
 - renders -> final rendered videos
+- thumbnails -> thumbnail JPEGs
 
 ### Signed URLs
 
@@ -169,6 +172,7 @@ bucket-name/
     +-- voiceovers/{uuid}-voice.wav
     +-- subtitles/{uuid}-subs.ass
     +-- renders/{uuid}-final.mp4
+    +-- thumbnails/{uuid}-thumbnail.jpg
 ```
 
 ### Job States

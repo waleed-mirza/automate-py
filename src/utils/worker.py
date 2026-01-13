@@ -9,6 +9,7 @@ from src.services.tts_service import tts_service
 from src.services.subtitle_service import subtitle_service
 from src.services.audio_mixer import audio_mixer
 from src.services.video_renderer import video_renderer
+from src.services.thumbnail_service import thumbnail_service
 from src.services.webhook_service import webhook_service
 from src.utils.s3_uploader import s3_uploader
 from src.utils.file_manager import file_manager
@@ -88,6 +89,16 @@ async def process_job(job: RenderJob):
             job.resolution
         )
 
+        # Step 7.5: Generate thumbnail (non-blocking)
+        thumbnail_url = None
+        try:
+            logger.info(f"[{job_id}] Step 7.5: Generating thumbnail")
+            thumbnail_file = await thumbnail_service.generate_thumbnail(final_video, job_dir)
+            thumbnail_url = await s3_uploader.upload_thumbnail(thumbnail_file, job_id)
+            logger.info(f"[{job_id}] Thumbnail uploaded successfully")
+        except Exception as e:
+            logger.warning(f"[{job_id}] Thumbnail generation failed: {str(e)}")
+
         # Step 8: Upload subtitles and video to S3
         logger.info(f"[{job_id}] Step 8: Uploading subtitles and video to S3")
         subtitles_url = await s3_uploader.upload_subtitle(subtitle_file, job_id)
@@ -99,7 +110,8 @@ async def process_job(job: RenderJob):
             job_id,
             voice_url,
             subtitles_url,
-            video_url
+            video_url,
+            thumbnail_url
         )
 
         # Update status to completed
@@ -108,7 +120,8 @@ async def process_job(job: RenderJob):
             "completed",
             voice_url=voice_url,
             subtitles_url=subtitles_url,
-            video_url=video_url
+            video_url=video_url,
+            thumbnail_url=thumbnail_url
         )
 
         logger.info(f"[{job_id}] Job completed successfully")
