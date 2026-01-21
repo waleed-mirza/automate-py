@@ -52,7 +52,11 @@
       "WebFetch(domain:ayosec.github.io)",
       "WebFetch(domain:github.com)",
       "Bash(where:*)",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(ls:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(docker:*)",
+      "Bash(wc:*)"
     ]
   },
   "hooks": {
