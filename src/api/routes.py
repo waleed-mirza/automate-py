@@ -323,10 +323,18 @@ async def render_video_manual(request: ManualRenderRequest):
         # Generate per-sentence audio for subtitle timing
         await tts_service.generate_voiceover(sentences, job_dir)
 
+        # Download base video and get dimensions (for correct subtitle alignment/scaling)
+        base_video_path = await video_renderer.download_video(request.base_video_url, job_dir)
+        video_dimensions = await video_renderer.get_video_dimensions(base_video_path)
+        
+        if video_dimensions is None:
+            logger.warning(f"[{job_id}] Failed to get video dimensions, using default 1920x1080 for subtitles")
+
         subtitle_file = await subtitle_service.generate_subtitles(
             sentences,
             job_dir,
-            request.settings.subtitle_style if request.settings else None
+            request.settings.subtitle_style if request.settings else None,
+            video_dimensions
         )
 
         voice_input = await _download_audio_file(
@@ -345,7 +353,7 @@ async def render_video_manual(request: ManualRenderRequest):
         )
 
         final_video = await video_renderer.render_video(
-            request.base_video_url,
+            base_video_path,
             mixed_audio,
             subtitle_file,
             job_dir,

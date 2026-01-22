@@ -1,5 +1,6 @@
 import subprocess
 import logging
+import json
 from pathlib import Path
 import httpx
 
@@ -14,7 +15,7 @@ class AudioMixer:
     Mixes voiceover audio with background music.
     """
 
-    def __init__(self, bgm_volume: float = 0.5, enable_fadeout: bool = True):
+    def __init__(self, bgm_volume: float = 0.2, enable_fadeout: bool = True):
         """
         Args:
             bgm_volume: Background music volume (0.0-1.0), default 0.2 (20%)
@@ -22,6 +23,7 @@ class AudioMixer:
         """
         self.bgm_volume = bgm_volume
         self.enable_fadeout = enable_fadeout
+        logger.info(f"AudioMixer initialized with bgm_volume={bgm_volume}, fadeout={enable_fadeout}")
 
     async def mix_audio(
         self,
@@ -124,12 +126,16 @@ class AudioMixer:
             # Build FFmpeg filter
             # Lower BGM volume and mix with voice
             # Duration is based on voice (first input)
-            filter_complex = f"[1:a]volume={self.bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=first"
+            # normalize=0 prevents amix from reducing volumes (default normalization halves each input)
+            filter_complex = f"[1:a]volume={self.bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=first:normalize=0"
 
-            # Add fade-out to BGM if enabled
-            # Fade out last 2 seconds
+            # Add fade-out to BGM if enabled (fade last 2 seconds)
             if self.enable_fadeout:
-                filter_complex = f"[1:a]volume={self.bgm_volume},afade=t=out:st=0:d=2[bgm];[0:a][bgm]amix=inputs=2:duration=first"
+                # Get voice duration to calculate fade start time
+                duration = self._get_audio_duration(voice_file)
+                fade_start = max(0, duration - 2)
+                logger.debug(f"Voice duration: {duration}s, fade starts at: {fade_start}s")
+                filter_complex = f"[1:a]volume={self.bgm_volume},afade=t=out:st={fade_start}:d=2[bgm];[0:a][bgm]amix=inputs=2:duration=first:normalize=0"
 
             cmd = [
                 "ffmpeg",
@@ -154,6 +160,19 @@ class AudioMixer:
             raise RuntimeError(f"FFmpeg audio mixing failed: {e.stderr}")
         except Exception as e:
             raise RuntimeError(f"Failed to mix audio: {str(e)}")
+
+    def _get_audio_duration(self, audio_file: Path) -> float:
+        """Get audio duration in seconds using ffprobe."""
+        cmd = [
+            "ffprobe",
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            str(audio_file)
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        return float(data["format"]["duration"])
 
 
 # Singleton instance

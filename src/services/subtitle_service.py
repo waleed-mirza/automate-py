@@ -37,7 +37,8 @@ class SubtitleService:
         self,
         sentences: list[str],
         job_dir: Path,
-        subtitle_style: dict = None
+        subtitle_style: dict | None = None,
+        video_dimensions: tuple[int, int] | None = None
     ) -> Path:
         """
         Generate ASS subtitle file from sentences.
@@ -46,6 +47,7 @@ class SubtitleService:
             sentences: List of sentence strings
             job_dir: Job directory containing sentence audio files
             subtitle_style: Optional custom subtitle styling
+            video_dimensions: Optional (width, height) of the video
 
         Returns:
             Path to subs.ass file
@@ -54,6 +56,37 @@ class SubtitleService:
 
         # Merge custom style with defaults
         style = {**self.default_style, **(subtitle_style or {})}
+
+        # Adjust alignment and PlayRes if video dimensions provided
+        play_res_x = 1920
+        play_res_y = 1080
+
+        if video_dimensions:
+            width, height = video_dimensions
+            play_res_x = width
+            play_res_y = height
+
+            # Only auto-set alignment if not explicitly provided in request
+            if not subtitle_style or "alignment" not in subtitle_style:
+                # Vertical/short video (height > width) -> Center vertically (Alignment 5)
+                if height > width:
+                    logger.info("Vertical video detected, setting subtitle alignment to center (5)")
+                    style["alignment"] = 5
+                else:
+                    # Horizontal/square video -> Bottom center (Alignment 2)
+                    logger.info("Horizontal/Square video detected, keeping default alignment (2)")
+                    style["alignment"] = 2
+            
+            # Scale font size based on resolution (baseline 1080p)
+            # scaled_size = int(style['font_size'] * play_res_y / 1080)
+            if play_res_y != 1080:
+                original_size = style["font_size"]
+                scaled_size = int(original_size * play_res_y / 1080)
+                # Ensure minimum readable size (e.g. 10)
+                scaled_size = max(10, scaled_size)
+                
+                logger.info(f"Scaling font size from {original_size} to {scaled_size} (PlayResY: {play_res_y})")
+                style["font_size"] = scaled_size
 
         # Get durations for each sentence audio file
         timings = []
@@ -73,7 +106,7 @@ class SubtitleService:
 
         # Generate ASS file
         subs_file = job_dir / "subs.ass"
-        self._write_ass_file(subs_file, timings, style)
+        self._write_ass_file(subs_file, timings, style, play_res_x, play_res_y)
 
         logger.info(f"Subtitles generated: {subs_file}")
         return subs_file
@@ -115,7 +148,14 @@ class SubtitleService:
         except Exception as e:
             raise RuntimeError(f"Failed to get audio duration: {str(e)}")
 
-    def _write_ass_file(self, output_path: Path, timings: list[dict], style: dict):
+    def _write_ass_file(
+        self,
+        output_path: Path,
+        timings: list[dict],
+        style: dict,
+        play_res_x: int = 1920,
+        play_res_y: int = 1080
+    ):
         """
         Write ASS subtitle file.
 
@@ -123,6 +163,8 @@ class SubtitleService:
             output_path: Output file path
             timings: List of timing dicts with start, end, text
             style: Style configuration dict
+            play_res_x: PlayResX value
+            play_res_y: PlayResY value
         """
         # ASS file header
         ass_content = [
@@ -130,8 +172,8 @@ class SubtitleService:
             "Title: Generated Subtitles",
             "ScriptType: v4.00+",
             "WrapStyle: 0",
-            "PlayResX: 1920",
-            "PlayResY: 1080",
+            f"PlayResX: {play_res_x}",
+            f"PlayResY: {play_res_y}",
             "",
             "[V4+ Styles]",
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",

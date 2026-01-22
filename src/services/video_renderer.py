@@ -1,5 +1,6 @@
 import subprocess
 import logging
+import json
 from pathlib import Path
 import httpx
 
@@ -24,17 +25,17 @@ class VideoRenderer:
 
     async def render_video(
         self,
-        base_video_url: str,
+        video_source: str | Path,
         audio_file: Path,
         subtitle_file: Path,
         job_dir: Path,
-        resolution: str = None
+        resolution: str | None = None
     ) -> Path:
         """
         Render final video with subtitles and audio.
 
         Args:
-            base_video_url: URL to base video file
+            video_source: URL to base video file OR Path to local video file
             audio_file: Path to audio file (voice or mixed)
             subtitle_file: Path to ASS subtitle file
             job_dir: Job directory for temporary files
@@ -45,8 +46,11 @@ class VideoRenderer:
         """
         logger.info(f"Rendering video (job: {job_dir.name})")
 
-        # Download base video
-        base_video = await self._download_video(base_video_url, job_dir)
+        # Download base video if URL provided, otherwise use local path
+        if isinstance(video_source, Path):
+            base_video = video_source
+        else:
+            base_video = await self.download_video(video_source, job_dir)
 
         # Render final video
         final_video = job_dir / "final.mp4"
@@ -61,7 +65,81 @@ class VideoRenderer:
         logger.info(f"Video rendering complete: {final_video}")
         return final_video
 
-    async def _download_video(self, url: str, job_dir: Path) -> Path:
+    async def get_video_dimensions(self, video_path: Path) -> tuple[int, int] | None:
+        """
+        Get video width and height using ffprobe.
+        Handles rotation (swaps width/height if 90 or 270 degrees).
+
+        Args:
+            video_path: Path to video file
+
+        Returns:
+            Tuple of (width, height) or None if detection fails
+        """
+        try:
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,rotation:stream_tags=rotate",
+                "-of", "json",
+                str(video_path)
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            data = json.loads(result.stdout)
+            if not data.get("streams"):
+                logger.warning(f"No video streams found in {video_path.name}")
+                return None
+                
+            stream = data["streams"][0]
+            width = int(stream.get("width", 0))
+            height = int(stream.get("height", 0))
+
+            # Check for rotation
+            rotation = 0
+            # Try direct rotation field (some ffmpeg versions)
+            if "rotation" in stream:
+                rotation = int(float(stream["rotation"]))
+            # Try tags
+            elif "tags" in stream and "rotate" in stream["tags"]:
+                rotation = int(float(stream["tags"]["rotate"]))
+            # Try side_data_list (common in newer ffmpeg for phone videos)
+            elif "side_data_list" in stream:
+                for side_data in stream["side_data_list"]:
+                    if "rotation" in side_data:
+                        rotation = int(float(side_data["rotation"]))
+                        break
+            
+            # Normalize rotation to 0-360
+            rotation = rotation % 360
+            
+            # Swap dimensions if rotated 90 or 270 degrees
+            if rotation in [90, 270]:
+                width, height = height, width
+                logger.info(f"Video detected with {rotation} deg rotation. Swapping dimensions to {width}x{height}")
+
+            if width == 0 or height == 0:
+                logger.warning(f"Invalid video dimensions detected: {width}x{height}")
+                return None
+
+            logger.debug(f"Video dimensions for {video_path.name}: {width}x{height}")
+            return width, height
+
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"ffprobe failed to get dimensions: {e.stderr}")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to get video dimensions: {str(e)}")
+            return None
+
+    async def download_video(self, url: str, job_dir: Path) -> Path:
         """
         Download base video from URL.
 
@@ -118,7 +196,7 @@ class VideoRenderer:
         audio_file: Path,
         subtitle_file: Path,
         output_file: Path,
-        resolution: str = None
+        resolution: str | None = None
     ):
         """
         Render final video with FFmpeg.

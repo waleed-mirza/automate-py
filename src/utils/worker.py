@@ -63,12 +63,21 @@ async def process_job(job: RenderJob):
         logger.info(f"[{job_id}] Step 4: Sending voiceover_uploaded webhook")
         await webhook_service.send_voiceover_uploaded(job_id, voice_url)
 
+        # Step 4.5: Download base video and get dimensions
+        logger.info(f"[{job_id}] Step 4.5: Downloading base video and getting dimensions")
+        base_video_path = await video_renderer.download_video(job.base_video_url, job_dir)
+        video_dimensions = await video_renderer.get_video_dimensions(base_video_path)
+        
+        if video_dimensions is None:
+            logger.warning(f"[{job_id}] Failed to get video dimensions, using default 1920x1080 for subtitles")
+
         # Step 5: Generate subtitles
         logger.info(f"[{job_id}] Step 5: Generating subtitles")
         subtitle_file = await subtitle_service.generate_subtitles(
             sentences,
             job_dir,
-            job.subtitle_style
+            job.subtitle_style,
+            video_dimensions
         )
 
         # Step 6: Mix audio (voice + BGM if provided)
@@ -82,7 +91,7 @@ async def process_job(job: RenderJob):
         # Step 7: Render final video
         logger.info(f"[{job_id}] Step 7: Rendering video")
         final_video = await video_renderer.render_video(
-            job.base_video_url,
+            base_video_path,
             mixed_audio,
             subtitle_file,
             job_dir,
