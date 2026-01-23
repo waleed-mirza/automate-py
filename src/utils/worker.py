@@ -85,7 +85,8 @@ async def process_job(job: RenderJob):
         mixed_audio = await audio_mixer.mix_audio(
             voice_file,
             job_dir,
-            job.bgm_url
+            job.bgm_url,
+            target_duration=job.desired_duration
         )
 
         # Step 7: Render final video
@@ -95,7 +96,8 @@ async def process_job(job: RenderJob):
             mixed_audio,
             subtitle_file,
             job_dir,
-            job.resolution
+            job.resolution,
+            desired_duration=job.desired_duration
         )
 
         # Step 7.5: Generate thumbnail (non-blocking)

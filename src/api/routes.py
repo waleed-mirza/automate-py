@@ -52,6 +52,12 @@ class RenderRequest(BaseModel):
         None,
         description="Topic title for AI thumbnail text overlay"
     )
+    desired_length: Optional[int] = Field(
+        None,
+        ge=30,
+        le=120,
+        description="Desired video duration in seconds (30-120)"
+    )
     settings: Optional[RenderSettings] = None
 
 
@@ -90,6 +96,12 @@ class ManualRenderRequest(BaseModel):
     thumbnail_url: Optional[str] = Field(
         None,
         description="Optional thumbnail S3 location to bake into video for Shorts"
+    )
+    desired_length: Optional[int] = Field(
+        None,
+        ge=30,
+        le=120,
+        description="Desired video duration in seconds (30-120)"
     )
     settings: Optional[RenderSettings] = None
 
@@ -261,7 +273,8 @@ async def render_video(request: RenderRequest):
         bgm_url=request.bgm_url,
         subtitle_style=request.settings.subtitle_style if request.settings else None,
         resolution=request.settings.resolution if request.settings else None,
-        title=request.title
+        title=request.title,
+        desired_duration=float(request.desired_length) if request.desired_length else None
     )
 
     # Add to queue
@@ -397,7 +410,8 @@ async def render_video_manual(request: ManualRenderRequest):
         mixed_audio = await audio_mixer.mix_audio(
             voice_file,
             job_dir,
-            request.bgm_url
+            request.bgm_url,
+            target_duration=float(request.desired_length) if request.desired_length else None
         )
 
         final_video = await video_renderer.render_video(
@@ -405,7 +419,8 @@ async def render_video_manual(request: ManualRenderRequest):
             mixed_audio,
             subtitle_file,
             job_dir,
-            request.settings.resolution if request.settings else None
+            request.settings.resolution if request.settings else None,
+            desired_duration=float(request.desired_length) if request.desired_length else None
         )
 
         # Determine aspect ratio from video dimensions

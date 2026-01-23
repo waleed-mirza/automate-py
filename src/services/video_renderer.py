@@ -29,7 +29,8 @@ class VideoRenderer:
         audio_file: Path,
         subtitle_file: Path,
         job_dir: Path,
-        resolution: str | None = None
+        resolution: str | None = None,
+        desired_duration: float | None = None
     ) -> Path:
         """
         Render final video with subtitles and audio.
@@ -40,6 +41,7 @@ class VideoRenderer:
             subtitle_file: Path to ASS subtitle file
             job_dir: Job directory for temporary files
             resolution: Optional resolution (e.g., "1920x1080")
+            desired_duration: Optional desired video duration in seconds
 
         Returns:
             Path to final.mp4 file
@@ -52,6 +54,24 @@ class VideoRenderer:
         else:
             base_video = await self.download_video(video_source, job_dir)
 
+        # Handle video duration adjustment if requested
+        if desired_duration:
+            video_duration = await self._get_video_duration(base_video)
+            logger.info(f"Video duration check: base={video_duration}s, desired={desired_duration}s")
+            
+            # Allow 1 second tolerance
+            if abs(video_duration - desired_duration) > 1.0:
+                if desired_duration > video_duration:
+                    logger.info("Extending video to match desired duration")
+                    base_video = await self.extend_video_with_crossfade(
+                        base_video, desired_duration, job_dir
+                    )
+                else:
+                    logger.info("Trimming video to match desired duration")
+                    base_video = await self.trim_video(
+                        base_video, desired_duration, job_dir
+                    )
+
         # Render final video
         final_video = job_dir / "final.mp4"
         await self._render_with_ffmpeg(
@@ -59,11 +79,210 @@ class VideoRenderer:
             audio_file,
             subtitle_file,
             final_video,
-            resolution
+            resolution,
+            use_shortest=not bool(desired_duration)
         )
 
         logger.info(f"Video rendering complete: {final_video}")
         return final_video
+
+    async def _get_video_duration(self, video_file: Path) -> float:
+        """Get video duration using ffprobe."""
+        try:
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_file)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return float(result.stdout.strip())
+        except Exception as e:
+            logger.warning(f"Failed to get video duration: {e}")
+            return 0.0
+
+    async def extend_video_with_crossfade(
+        self,
+        video_file: Path,
+        target_duration: float,
+        job_dir: Path
+    ) -> Path:
+        """
+        Extend video to target duration by looping with crossfade transitions.
+        
+        Args:
+            video_file: Path to base video
+            target_duration: Desired duration in seconds
+            job_dir: Job directory for output
+            
+        Returns:
+            Path to extended video file
+        """
+        logger.info(f"Extending video to {target_duration}s with crossfade")
+        output_file = job_dir / "extended_video.mp4"
+        
+        try:
+            duration = await self._get_video_duration(video_file)
+            if duration <= 1.5:
+                # Too short for 1s crossfade, fallback to simple loop
+                return await self._simple_loop_video(video_file, target_duration, job_dir)
+
+            # Calculate required loops
+            # effective_duration = duration - crossfade_duration (approx 1s)
+            # We need target_duration
+            loops = int(target_duration / (duration - 1)) + 2
+            
+            # Create a simple loop using stream_loop first (efficient) then trim
+            # However, for crossfade we need a more complex filter
+            # For simplicity and reliability, we'll use a concat approach with xfade
+            # BUT generating a complex xfade filter for N loops is tricky.
+            # Alternative: stream_loop then trim. It's not "crossfade" but it's seamless if video is seamless.
+            # The prompt asks for "crossfade transitions".
+            
+            # Let's try to construct a complex filter for xfade.
+            # Limit loops to avoid crazy command line length (max 10 loops usually enough for BG video)
+            loops = min(loops, 20)
+            
+            # Prepare input args (same file repeated)
+            inputs = []
+            filter_parts = []
+            
+            # Start with video 0
+            # [0:v]
+            # Loop logic:
+            # [0:v][1:v]xfade=duration=1:offset=(duration-1)[v1];
+            # [v1][2:v]xfade=duration=1:offset=(2*duration-2)[v2];
+            # ...
+            
+            # Actually easier: create a file with file list for concat demuxer if no crossfade
+            # BUT prompt specified "crossfade".
+            
+            # If implementation of N-loop xfade is too complex, we can do:
+            # 2-loop xfade, render to temp, then 2-loop that temp, etc. 
+            # OR just standard loop if video is seamless.
+            
+            # Let's implement a simpler "tiling" with xfade using a loop in python to build the filter string.
+            # We need to know exact duration for offsets.
+            
+            cmd = ["ffmpeg"]
+            for _ in range(loops):
+                cmd.extend(["-i", str(video_file)])
+            
+            filter_str = ""
+            # Crossfade duration
+            xf_dur = 1.0
+            
+            # We build the filter chain
+            # [0:v][1:v]xfade=transition=fade:duration=1:offset=dur-1[v1];
+            # [v1][2:v]xfade=transition=fade:duration=1:offset=new_offset[v2];
+            
+            current_offset = duration - xf_dur
+            last_label = "0:v"
+            
+            # Since audio handling with xfade is complex (need afade/acrossfade too), 
+            # and usually these are background videos without important audio (or audio is replaced),
+            # we will focus on video stream. The render_video replaces audio anyway.
+            
+            for i in range(1, loops):
+                next_label = f"v{i}"
+                if i == loops - 1:
+                    next_label = "vout"
+                
+                filter_str += f"[{last_label}][{i}:v]xfade=transition=fade:duration={xf_dur}:offset={current_offset:.3f}[{next_label}];"
+                
+                last_label = next_label
+                current_offset += (duration - xf_dur)
+            
+            # Trim to exact target duration at the end
+            filter_str += f"[vout]trim=duration={target_duration}[final]"
+            
+            cmd.extend([
+                "-filter_complex", filter_str,
+                "-map", "[final]",
+                "-c:v", "libx264",
+                "-preset", self.ffmpeg_preset,
+                # Create silent audio to match video length if needed? 
+                # render_video replaces audio, so we don't strictly need audio here.
+                # But it's safer to output valid video file.
+                "-an", # Remove audio from extended video (will be added by mixer)
+                str(output_file),
+                "-y"
+            ])
+            
+            logger.debug(f"Extending video with command: {' '.join(cmd)}")
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            
+            return output_file
+            
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"FFmpeg extend video failed: {e.stderr}")
+            # Fallback: simple loop
+            return await self._simple_loop_video(video_file, target_duration, job_dir)
+        except Exception as e:
+            logger.warning(f"Failed to extend video: {str(e)}")
+            return video_file
+
+    async def _simple_loop_video(self, video_file: Path, target_duration: float, job_dir: Path) -> Path:
+        """Fallback: simple stream loop."""
+        output_file = job_dir / "extended_simple.mp4"
+        try:
+            cmd = [
+                "ffmpeg",
+                "-stream_loop", "-1",
+                "-i", str(video_file),
+                "-t", str(target_duration),
+                "-c:v", "copy",
+                "-an",
+                str(output_file),
+                "-y"
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return output_file
+        except Exception:
+            return video_file
+
+    async def trim_video(
+        self,
+        video_file: Path,
+        target_duration: float,
+        job_dir: Path
+    ) -> Path:
+        """
+        Trim video to target duration.
+        
+        Args:
+            video_file: Path to base video
+            target_duration: Desired duration in seconds
+            job_dir: Job directory for output
+            
+        Returns:
+            Path to trimmed video file
+        """
+        logger.info(f"Trimming video to {target_duration}s")
+        output_file = job_dir / "trimmed_video.mp4"
+        
+        try:
+            cmd = [
+                "ffmpeg",
+                "-i", str(video_file),
+                "-t", str(target_duration),
+                "-c:v", "libx264", # Re-encode to ensure exact cut and keyframes
+                "-preset", self.ffmpeg_preset,
+                "-an", # Remove audio (will be added by mixer)
+                str(output_file),
+                "-y"
+            ]
+            
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return output_file
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg trim failed: {e.stderr}")
+            raise RuntimeError(f"Failed to trim video: {e.stderr}")
+        except Exception as e:
+            logger.error(f"Failed to trim video: {str(e)}")
+            raise RuntimeError(f"Failed to trim video: {str(e)}")
 
     async def get_video_dimensions(self, video_path: Path) -> tuple[int, int] | None:
         """
@@ -196,7 +415,8 @@ class VideoRenderer:
         audio_file: Path,
         subtitle_file: Path,
         output_file: Path,
-        resolution: str | None = None
+        resolution: str | None = None,
+        use_shortest: bool = True
     ):
         """
         Render final video with FFmpeg.
@@ -207,6 +427,7 @@ class VideoRenderer:
             subtitle_file: Path to subtitle file
             output_file: Path to output video
             resolution: Optional resolution string (e.g., "1920x1080")
+            use_shortest: Whether to use -shortest flag (default True)
         """
         try:
             # Build video filter
@@ -228,10 +449,15 @@ class VideoRenderer:
                 "-preset", self.ffmpeg_preset,
                 "-c:a", "aac",
                 "-b:a", AUDIO_BITRATE,
-                "-shortest",  # End when shortest stream ends
+            ]
+            
+            if use_shortest:
+                cmd.append("-shortest")  # End when shortest stream ends
+                
+            cmd.extend([
                 str(output_file),
                 "-y"  # Overwrite output file
-            ]
+            ])
 
             logger.debug(f"Running FFmpeg command: {' '.join(cmd)}")
 

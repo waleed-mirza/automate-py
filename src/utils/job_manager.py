@@ -31,6 +31,7 @@ class RenderJob:
     subtitle_style: Optional[dict] = None
     resolution: Optional[str] = None
     title: Optional[str] = None
+    desired_duration: Optional[float] = None
 
 
 class JobManager:

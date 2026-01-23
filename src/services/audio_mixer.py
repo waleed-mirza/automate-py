@@ -1,6 +1,7 @@
 import subprocess
 import logging
 import json
+import asyncio
 from pathlib import Path
 import httpx
 
@@ -29,7 +30,8 @@ class AudioMixer:
         self,
         voice_file: Path,
         job_dir: Path,
-        bgm_url: str = None
+        bgm_url: str = None,
+        target_duration: float | None = None
     ) -> Path:
         """
         Mix voiceover with background music.
@@ -38,6 +40,7 @@ class AudioMixer:
             voice_file: Path to voice.wav file
             job_dir: Job directory for temporary files
             bgm_url: Optional URL to background music file
+            target_duration: Optional forced total duration (forces looping/trimming)
 
         Returns:
             Path to mixed audio file (or original voice file if no BGM)
@@ -51,12 +54,71 @@ class AudioMixer:
         # Download BGM
         bgm_file = await self._download_bgm(bgm_url, job_dir)
 
+        # Loop BGM if target duration specified
+        if target_duration:
+             bgm_file = await self.loop_bgm_to_duration(bgm_file, target_duration, job_dir)
+
         # Mix voice + BGM
         mixed_file = job_dir / "mixed.wav"
-        await self._mix_with_ffmpeg(voice_file, bgm_file, mixed_file)
+        await self._mix_with_ffmpeg(voice_file, bgm_file, mixed_file, target_duration)
 
         logger.info(f"Audio mixing complete: {mixed_file}")
         return mixed_file
+
+    async def loop_bgm_to_duration(
+        self,
+        bgm_file: Path,
+        target_duration: float,
+        job_dir: Path
+    ) -> Path:
+        """
+        Loop BGM seamlessly to match target duration.
+        
+        Args:
+            bgm_file: Path to BGM audio file
+            target_duration: Desired duration in seconds
+            job_dir: Job directory for output
+            
+        Returns:
+            Path to looped BGM file
+        """
+        logger.info(f"Looping BGM to {target_duration}s")
+        output_file = job_dir / "looped_bgm.mp3"
+        
+        try:
+            duration = await self._get_audio_duration(bgm_file)
+            if duration <= 0:
+                return bgm_file
+                
+            # Calculate loops needed
+            loops = int(target_duration / duration) + 2
+            
+            # Use aloop filter
+            # aloop=loop=-1:size=2e+09 (loop infinitely, but we limit by -t)
+            # Actually easier: -stream_loop
+            
+            cmd = [
+                "ffmpeg",
+                "-stream_loop", "-1",
+                "-i", str(bgm_file),
+                "-t", str(target_duration),
+                # Add fadeout at the end
+                "-af", f"afade=t=out:st={target_duration-3}:d=3",
+                "-c:a", "libmp3lame",
+                "-q:a", "2",
+                str(output_file),
+                "-y"
+            ]
+            
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return output_file
+            
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"FFmpeg BGM loop failed: {e.stderr}")
+            return bgm_file
+        except Exception as e:
+            logger.warning(f"Failed to loop BGM: {str(e)}")
+            return bgm_file
 
     async def _download_bgm(self, url: str, job_dir: Path) -> Path:
         """
@@ -112,7 +174,8 @@ class AudioMixer:
         self,
         voice_file: Path,
         bgm_file: Path,
-        output_file: Path
+        output_file: Path,
+        target_duration: float | None = None
     ):
         """
         Mix voice and BGM using FFmpeg.
@@ -121,21 +184,47 @@ class AudioMixer:
             voice_file: Path to voice audio
             bgm_file: Path to background music
             output_file: Path to output mixed audio
+            target_duration: Optional forced total duration
         """
         try:
             # Build FFmpeg filter
-            # Lower BGM volume and mix with voice
-            # Duration is based on voice (first input)
-            # normalize=0 prevents amix from reducing volumes (default normalization halves each input)
-            filter_complex = f"[1:a]volume={self.bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=first:normalize=0"
-
-            # Add fade-out to BGM if enabled (fade last 2 seconds)
+            
+            # 1. Prepare BGM (volume + fadeout)
+            bgm_part = f"[1:a]volume={self.bgm_volume}"
+            
+            # Determine final duration for fadeout calculation
+            if target_duration:
+                final_duration = target_duration
+            else:
+                final_duration = await self._get_audio_duration(voice_file)
+                
             if self.enable_fadeout:
-                # Get voice duration to calculate fade start time
-                duration = self._get_audio_duration(voice_file)
-                fade_start = max(0, duration - 2)
-                logger.debug(f"Voice duration: {duration}s, fade starts at: {fade_start}s")
-                filter_complex = f"[1:a]volume={self.bgm_volume},afade=t=out:st={fade_start}:d=2[bgm];[0:a][bgm]amix=inputs=2:duration=first:normalize=0"
+                fade_start = max(0, final_duration - 2)
+                logger.debug(f"Audio duration: {final_duration}s, fade starts at: {fade_start}s")
+                bgm_part += f",afade=t=out:st={fade_start}:d=2"
+            
+            bgm_part += "[bgm]"
+            
+            # 2. Prepare Voice (padding if needed)
+            voice_part = ""
+            mix_input_1 = "[0:a]"
+            
+            if target_duration:
+                v_dur = await self._get_audio_duration(voice_file)
+                if target_duration > v_dur:
+                    # Pad voice with silence to match target duration
+                    voice_part = f"[0:a]apad=whole_dur={target_duration}[padded];"
+                    mix_input_1 = "[padded]"
+                elif target_duration < v_dur:
+                    # Trim voice to match target duration (with short fade out)
+                    fade_start = max(0, target_duration - 0.5)
+                    voice_part = f"[0:a]atrim=0:{target_duration},afade=t=out:st={fade_start}:d=0.5[trimmed];"
+                    mix_input_1 = "[trimmed]"
+            
+            # 3. Combine
+            # normalize=0 prevents amix from reducing volumes
+            # duration=first ensures output matches the first input (voice/padded/trimmed voice)
+            filter_complex = f"{voice_part}{bgm_part};{mix_input_1}[bgm]amix=inputs=2:duration=first:normalize=0"
 
             cmd = [
                 "ffmpeg",
@@ -161,18 +250,22 @@ class AudioMixer:
         except Exception as e:
             raise RuntimeError(f"Failed to mix audio: {str(e)}")
 
-    def _get_audio_duration(self, audio_file: Path) -> float:
+    async def _get_audio_duration(self, audio_file: Path) -> float:
         """Get audio duration in seconds using ffprobe."""
         cmd = [
             "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
             str(audio_file)
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(result.stdout)
-        return float(data["format"]["duration"])
+        result = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await result.communicate()
+        return float(stdout.decode().strip())
 
 
 # Singleton instance
