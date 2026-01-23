@@ -30,6 +30,7 @@ class RenderJob:
     bgm_url: Optional[str] = None
     subtitle_style: Optional[dict] = None
     resolution: Optional[str] = None
+    title: Optional[str] = None
 
 
 class JobManager:

@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     s3_video_prefix: str = "uploads/renders"
     s3_thumbnail_prefix: str = "uploads/thumbnails"
 
+    # Thumbnail provider selection: "frame" (FFmpeg extraction) or "cloudflare" (AI generation)
+    thumbnail_provider: str = "frame"
+    
+    # Cloudflare Workers AI configuration (required if thumbnail_provider = "cloudflare")
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: str = ""
+
     # Signed URL configuration (seconds)
     s3_signed_url_expiration_seconds: int = 3600
 

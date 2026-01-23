@@ -100,13 +100,47 @@ async def process_job(job: RenderJob):
 
         # Step 7.5: Generate thumbnail (non-blocking)
         thumbnail_url = None
+        thumbnail_file = None
+        is_short = False
         try:
             logger.info(f"[{job_id}] Step 7.5: Generating thumbnail")
-            thumbnail_file = await thumbnail_service.generate_thumbnail(final_video, job_dir)
+            # Determine aspect ratio from video dimensions
+            aspect_ratio = "16:9"  # default
+            if video_dimensions:
+                width, height = video_dimensions
+                ratio = width / height
+                if abs(ratio - 16/9) < 0.1:
+                    aspect_ratio = "16:9"
+                elif abs(ratio - 9/16) < 0.1:
+                    aspect_ratio = "9:16"
+                    is_short = True
+                elif abs(ratio - 1.0) < 0.1:
+                    aspect_ratio = "1:1"
+            
+            thumbnail_file = await thumbnail_service.generate_thumbnail(
+                video_file=final_video,
+                job_dir=job_dir,
+                script=job.script,
+                aspect_ratio=aspect_ratio,
+                title=job.title
+            )
             thumbnail_url = await s3_uploader.upload_thumbnail(thumbnail_file, job_id)
             logger.info(f"[{job_id}] Thumbnail uploaded successfully")
         except Exception as e:
             logger.warning(f"[{job_id}] Thumbnail generation failed: {str(e)}")
+
+        # Step 7.6: Bake thumbnail into video for Shorts (YouTube workaround)
+        if is_short and thumbnail_file and thumbnail_file.exists():
+            try:
+                logger.info(f"[{job_id}] Step 7.6: Baking thumbnail into Short video")
+                final_video = await video_renderer.bake_thumbnail_into_video(
+                    video_file=final_video,
+                    thumbnail_file=thumbnail_file,
+                    job_dir=job_dir
+                )
+                logger.info(f"[{job_id}] Thumbnail baked into Short video")
+            except Exception as e:
+                logger.warning(f"[{job_id}] Thumbnail baking failed (continuing without): {str(e)}")
 
         # Step 8: Upload subtitles and video to S3
         logger.info(f"[{job_id}] Step 8: Uploading subtitles and video to S3")

@@ -249,6 +249,113 @@ class VideoRenderer:
         except Exception as e:
             raise RuntimeError(f"Failed to render video: {str(e)}")
 
+    async def bake_thumbnail_into_video(
+        self,
+        video_file: Path,
+        thumbnail_file: Path,
+        job_dir: Path,
+    ) -> Path:
+        """
+        Prepend thumbnail as a short frame at the start of the video.
+        This is the workaround for YouTube Shorts not supporting custom thumbnails via API.
+        YouTube will auto-select this frame as the thumbnail.
+
+        Args:
+            video_file: Path to the rendered video
+            thumbnail_file: Path to the thumbnail image
+            job_dir: Job directory for temporary files
+
+        Returns:
+            Path to the modified video with baked thumbnail
+        """
+        logger.info(f"Baking thumbnail into video for Shorts")
+
+        output_file = job_dir / "final_with_thumb.mp4"
+
+        try:
+            # Get video stream parameters (dimensions, fps, pixel format)
+            video_probe_cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate,pix_fmt,sample_aspect_ratio",
+                "-of", "json",
+                str(video_file)
+            ]
+            video_probe_result = subprocess.run(video_probe_cmd, capture_output=True, text=True, check=True)
+            video_probe_data = json.loads(video_probe_result.stdout)
+            video_stream = video_probe_data["streams"][0]
+            
+            width = video_stream["width"]
+            height = video_stream["height"]
+            fps_val = video_stream["r_frame_rate"]
+            pix_fmt = video_stream.get("pix_fmt", "yuv420p")
+
+            # Get audio stream parameters (sample rate, channels)
+            audio_probe_cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=sample_rate,channels",
+                "-of", "json",
+                str(video_file)
+            ]
+            audio_probe_result = subprocess.run(audio_probe_cmd, capture_output=True, text=True, check=True)
+            audio_probe_data = json.loads(audio_probe_result.stdout)
+            
+            sample_rate = 44100
+            channels = "stereo"
+            if audio_probe_data.get("streams"):
+                audio_stream = audio_probe_data["streams"][0]
+                sample_rate = int(audio_stream.get("sample_rate", 44100))
+                num_channels = int(audio_stream.get("channels", 2))
+                channels = "stereo" if num_channels >= 2 else "mono"
+
+            # Single-pass concat filter approach
+            # 1. Scale/pad thumbnail to match video dimensions and FPS
+            # 2. Generate silent audio for thumbnail segment
+            # 3. Setsar on main video to match
+            # 4. Concat everything
+            filter_complex = (
+                f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps_val}[v0];"
+                f"anullsrc=r={sample_rate}:cl={channels}:d=0.5[a0];"
+                f"[1:v]setsar=1[v1];"
+                f"[v0][a0][v1][1:a]concat=n=2:v=1:a=1[v][a]"
+            )
+
+            cmd = [
+                "ffmpeg",
+                "-loop", "1",
+                "-t", "0.5",
+                "-i", str(thumbnail_file),
+                "-i", str(video_file),
+                "-filter_complex", filter_complex,
+                "-map", "[v]",
+                "-map", "[a]",
+                "-c:v", "libx264",
+                "-preset", self.ffmpeg_preset,
+                "-pix_fmt", pix_fmt,
+                "-c:a", "aac",
+                "-b:a", AUDIO_BITRATE,
+                "-movflags", "+faststart",
+                str(output_file),
+                "-y"
+            ]
+            
+            logger.debug(f"Baking thumbnail with command: {' '.join(cmd)}")
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            logger.info(f"Thumbnail baked into video: {output_file}")
+            return output_file
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg thumbnail baking failed: {e.stderr}")
+            raise RuntimeError(f"FFmpeg thumbnail baking failed: {e.stderr}")
+        except Exception as e:
+            logger.error(f"Failed to bake thumbnail into video: {str(e)}")
+            raise RuntimeError(f"Failed to bake thumbnail into video: {str(e)}")
+
 
 # Singleton instance
 video_renderer = VideoRenderer()

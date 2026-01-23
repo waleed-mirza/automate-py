@@ -48,6 +48,10 @@ class RenderRequest(BaseModel):
         None,
         description="Optional background music URL (HTTP/HTTPS or s3://bucket/key)"
     )
+    title: Optional[str] = Field(
+        None,
+        description="Topic title for AI thumbnail text overlay"
+    )
     settings: Optional[RenderSettings] = None
 
 
@@ -78,6 +82,14 @@ class ManualRenderRequest(BaseModel):
     bgm_url: Optional[str] = Field(
         None,
         description="Optional background music S3 location (s3://bucket/key)"
+    )
+    is_short: bool = Field(
+        False,
+        description="Whether this is a YouTube Short (triggers thumbnail baking)"
+    )
+    thumbnail_url: Optional[str] = Field(
+        None,
+        description="Optional thumbnail S3 location to bake into video for Shorts"
     )
     settings: Optional[RenderSettings] = None
 
@@ -170,6 +182,41 @@ def _ensure_wav(input_file: Path, output_file: Path) -> Path:
     return output_file
 
 
+async def _download_thumbnail_file(url: str, job_dir: Path) -> Path:
+    """Download thumbnail image from S3 for baking into Shorts video."""
+    resolved_url = url
+    if s3_uploader.is_s3_location(url):
+        resolved_url = s3_uploader.get_presigned_url(url)
+
+    # Determine extension from URL
+    extension = ".jpg"
+    if "." in url.split("/")[-1]:
+        ext = url.split(".")[-1].split("?")[0].lower()
+        if ext in ["jpg", "jpeg", "png", "webp"]:
+            extension = "." + ext
+
+    thumbnail_file = job_dir / f"thumbnail_input{extension}"
+    max_bytes = 10 * 1024 * 1024  # 10MB limit for thumbnails
+
+    try:
+        async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
+            async with client.stream("GET", resolved_url) as response:
+                response.raise_for_status()
+                downloaded_bytes = 0
+                with open(thumbnail_file, "wb") as f:
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        downloaded_bytes += len(chunk)
+                        if downloaded_bytes > max_bytes:
+                            raise RuntimeError("Thumbnail exceeds 10MB limit")
+                        f.write(chunk)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Failed to download thumbnail: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Error downloading thumbnail: {str(e)}")
+
+    return thumbnail_file
+
+
 @router.post("/render", response_model=RenderResponse)
 async def render_video(request: RenderRequest):
     """
@@ -213,7 +260,8 @@ async def render_video(request: RenderRequest):
         base_video_url=request.base_video_url,
         bgm_url=request.bgm_url,
         subtitle_style=request.settings.subtitle_style if request.settings else None,
-        resolution=request.settings.resolution if request.settings else None
+        resolution=request.settings.resolution if request.settings else None,
+        title=request.title
     )
 
     # Add to queue
@@ -360,15 +408,71 @@ async def render_video_manual(request: ManualRenderRequest):
             request.settings.resolution if request.settings else None
         )
 
+        # Determine aspect ratio from video dimensions
+        aspect_ratio = "16:9"  # default
+        if video_dimensions:
+            width, height = video_dimensions
+            ratio = width / height
+            if abs(ratio - 16/9) < 0.1:
+                aspect_ratio = "16:9"
+            elif abs(ratio - 9/16) < 0.1:
+                aspect_ratio = "9:16"
+            elif abs(ratio - 1.0) < 0.1:
+                aspect_ratio = "1:1"
+
+        # Generate thumbnail first (needed for both regular videos and Shorts)
+        thumbnail_url = None
+        thumbnail_file = None
+        try:
+            thumbnail_file = await thumbnail_service.generate_thumbnail(
+                video_file=final_video,
+                job_dir=job_dir,
+                script=request.script,
+                aspect_ratio=aspect_ratio
+            )
+        except Exception as e:
+            logger.warning(f"Thumbnail generation failed for job {job_id}: {str(e)}")
+
+        # For Shorts: bake thumbnail into video as first frame (YouTube API limitation)
+        # YouTube doesn't allow setting thumbnails via API for Shorts
+        if request.is_short and thumbnail_file:
+            try:
+                logger.info(f"[{job_id}] Baking thumbnail into Short video")
+                final_video = await video_renderer.bake_thumbnail_into_video(
+                    final_video,
+                    thumbnail_file,
+                    job_dir
+                )
+                logger.info(f"[{job_id}] Thumbnail baked successfully")
+            except Exception as e:
+                logger.warning(f"[{job_id}] Thumbnail baking failed (continuing without): {str(e)}")
+
+        # Also support external thumbnail URL for Shorts (e.g., AI-generated)
+        if request.is_short and request.thumbnail_url and not thumbnail_file:
+            try:
+                logger.info(f"[{job_id}] Baking external thumbnail into Short video")
+                thumbnail_download = await _download_thumbnail_file(
+                    request.thumbnail_url,
+                    job_dir
+                )
+                final_video = await video_renderer.bake_thumbnail_into_video(
+                    final_video,
+                    thumbnail_download,
+                    job_dir
+                )
+                logger.info(f"[{job_id}] External thumbnail baked successfully")
+            except Exception as e:
+                logger.warning(f"[{job_id}] External thumbnail baking failed: {str(e)}")
+
         subtitles_url = await s3_uploader.upload_subtitle(subtitle_file, job_id)
         video_url = await s3_uploader.upload_video(final_video, job_id)
 
-        thumbnail_url = None
-        try:
-            thumbnail_file = await thumbnail_service.generate_thumbnail(final_video, job_dir)
-            thumbnail_url = await s3_uploader.upload_thumbnail(thumbnail_file, job_id)
-        except Exception as e:
-            logger.warning(f"Thumbnail generation failed for job {job_id}: {str(e)}")
+        # Upload thumbnail to S3
+        if thumbnail_file:
+            try:
+                thumbnail_url = await s3_uploader.upload_thumbnail(thumbnail_file, job_id)
+            except Exception as e:
+                logger.warning(f"Thumbnail upload failed for job {job_id}: {str(e)}")
 
         job_succeeded = True
         return RenderResponse(

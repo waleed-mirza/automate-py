@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Codex when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -17,7 +17,7 @@ Python-based video rendering service that generates voiceover narration videos. 
 3. **Subtitle Sync**: Use ffprobe to measure audio durations → generate sentence-level `.ass` subtitles (no Whisper)
 4. **Audio Mixing**: Combine voice + background music (lower BGM volume, optional fade-out)
 5. **Video Rendering**: FFmpeg burns ASS subtitles into base video with mixed audio
-6. **Thumbnail**: FFmpeg extracts a frame at ~10% duration (min 1s) from `final.mp4`, uploads thumbnail JPEG
+6. **Thumbnail**: Generate via configured provider (FFmpeg frame extraction or Cloudflare AI + Pillow text overlay)
 7. **Upload**: Push artifacts (`voice.wav`, `subs.ass`, `final.mp4`, `thumbnail.jpg`) to Backblaze S3, return URLs
 
 ### Tech Stack
@@ -124,7 +124,8 @@ automation-python-server/
     │   ├── subtitle_service.py # ASS subtitle generation
     │   ├── audio_mixer.py      # Voice + BGM mixing
     │   ├── video_renderer.py   # FFmpeg video rendering
-    │   ├── thumbnail_service.py # FFmpeg thumbnail extraction
+    │   ├── thumbnail_service.py # Thumbnail provider router
+    │   ├── ai_thumbnail_service.py # Cloudflare AI + Pillow thumbnails
     │   └── webhook_service.py  # Webhook notifications
     └── utils/
         ├── s3_uploader.py      # Backblaze B2 uploads
@@ -192,6 +193,27 @@ bucket-name/
 - `TTS_PROVIDER` chooses between `piper` and `kokoro` (default `kokoro`).
 - Kokoro uses `KOKORO_MODEL_PATH` (default `/usr/local/share/kokoro/kokoro-v1.0.onnx`) and `KOKORO_VOICES_PATH` (default `/usr/local/share/kokoro/voices/voices-v1.0.bin`).
 - Kokoro requires `libsndfile1` for WAV output.
+
+### Thumbnail Provider Selection
+
+- `THUMBNAIL_PROVIDER` chooses between `frame` and `cloudflare` (default `frame`).
+- **frame**: FFmpeg extracts a frame at ~10% video duration. Free, fast, no external dependencies.
+- **cloudflare**: Cloudflare Workers AI (Flux.1 Schnell) generates eye-catching background + Pillow adds text overlay.
+
+Cloudflare AI thumbnail features:
+- Generates background image from script context via Flux.1 Schnell model
+- Extracts 2-4 word hook from script for text overlay
+- Bold white text with black outline (YouTube best practices)
+- Auto-resizes to YouTube-optimal dimensions based on video aspect ratio:
+  - 16:9 → 1280x720
+  - 9:16 → 720x1280
+  - 1:1 → 1080x1080
+- Free tier: ~50-100 images/day (10,000 neurons)
+- Fallback: If Cloudflare API fails or credentials missing, falls back to frame extraction
+
+Required env vars for Cloudflare provider:
+- `CLOUDFLARE_ACCOUNT_ID`: From Cloudflare Dashboard → Workers & Pages → right sidebar
+- `CLOUDFLARE_API_TOKEN`: Create at My Profile → API Tokens → "Workers AI" template
 
 ## Critical Constraints
 

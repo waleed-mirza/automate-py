@@ -2,24 +2,28 @@ import logging
 import subprocess
 from pathlib import Path
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 
-class ThumbnailService:
+class FrameThumbnailService:
     """
     Generates a thumbnail image from a rendered video using FFmpeg.
+    Used when thumbnail_provider = "frame"
     """
 
-    async def generate_thumbnail(self, video_file: Path, job_dir: Path) -> Path:
+    async def generate_thumbnail(
+        self,
+        video_file: Path,
+        job_dir: Path,
+        script: str | None = None,
+        aspect_ratio: str = "16:9",
+        title: str | None = None
+    ) -> Path:
         """
         Extract a single frame from the video to create a thumbnail.
-
-        Args:
-            video_file: Path to rendered video file
-            job_dir: Job directory for temporary files
-
-        Returns:
-            Path to thumbnail.jpg
+        Note: script, aspect_ratio, and title are ignored for frame extraction.
         """
         if not video_file.exists():
             raise FileNotFoundError(f"Video file not found: {video_file}")
@@ -41,15 +45,7 @@ class ThumbnailService:
         return thumbnail_file
 
     def _get_video_duration(self, video_file: Path) -> float:
-        """
-        Get duration of video file using ffprobe.
-
-        Args:
-            video_file: Path to video file
-
-        Returns:
-            Duration in seconds
-        """
+        """Get duration of video file using ffprobe."""
         try:
             cmd = [
                 "ffprobe",
@@ -77,14 +73,7 @@ class ThumbnailService:
             raise RuntimeError(f"Failed to get video duration: {str(e)}")
 
     def _extract_frame(self, video_file: Path, output_file: Path, timestamp: float):
-        """
-        Extract a single frame from a video at a specific timestamp.
-
-        Args:
-            video_file: Path to video file
-            output_file: Path to output thumbnail file
-            timestamp: Timestamp in seconds
-        """
+        """Extract a single frame from a video at a specific timestamp."""
         try:
             cmd = [
                 "ffmpeg",
@@ -109,6 +98,86 @@ class ThumbnailService:
             raise RuntimeError(f"FFmpeg thumbnail extraction failed: {e.stderr}")
         except Exception as e:
             raise RuntimeError(f"Failed to extract thumbnail: {str(e)}")
+
+
+class ThumbnailService:
+    """
+    Router for thumbnail generation.
+    Selects provider based on settings.thumbnail_provider:
+    - "frame": FFmpeg frame extraction (default)
+    - "cloudflare": Cloudflare Workers AI generation + Pillow text overlay
+    """
+
+    def __init__(self):
+        self._frame_service = FrameThumbnailService()
+        self._ai_service = None  # Lazy load to avoid import errors if not configured
+
+    async def generate_thumbnail(
+        self,
+        video_file: Path,
+        job_dir: Path,
+        script: str | None = None,
+        aspect_ratio: str = "16:9",
+        title: str | None = None
+    ) -> Path:
+        """
+        Generate thumbnail using configured provider.
+        
+        Args:
+            video_file: Path to rendered video file (required for frame extraction)
+            job_dir: Job directory for temporary files
+            script: Video script (used by AI provider for context)
+            aspect_ratio: Video aspect ratio (16:9, 9:16, 1:1)
+            title: Optional title override for text overlay
+            
+        Returns:
+            Path to thumbnail.jpg
+        """
+        provider = settings.thumbnail_provider.lower()
+        
+        if provider == "cloudflare":
+            if not script:
+                logger.warning("AI thumbnail requested but no script provided, falling back to frame extraction")
+                provider = "frame"
+            elif not settings.cloudflare_account_id or not settings.cloudflare_api_token:
+                logger.warning("Cloudflare credentials not configured, falling back to frame extraction")
+                provider = "frame"
+        
+        if provider == "cloudflare":
+            logger.info("Generating AI thumbnail via Cloudflare Workers AI")
+            assert script is not None  # Guaranteed by checks above
+            try:
+                return await self._get_ai_service().generate_thumbnail(
+                    script=script,
+                    job_dir=job_dir,
+                    aspect_ratio=aspect_ratio,
+                    title=title
+                )
+            except Exception as e:
+                logger.warning(f"Cloudflare AI thumbnail failed, falling back to frame extraction: {e}")
+                return await self._frame_service.generate_thumbnail(
+                    video_file=video_file,
+                    job_dir=job_dir,
+                    script=script,
+                    aspect_ratio=aspect_ratio,
+                    title=title
+                )
+        else:
+            logger.info(f"Generating thumbnail via frame extraction")
+            return await self._frame_service.generate_thumbnail(
+                video_file=video_file,
+                job_dir=job_dir,
+                script=script,
+                aspect_ratio=aspect_ratio,
+                title=title
+            )
+
+    def _get_ai_service(self):
+        """Lazy load AI thumbnail service."""
+        if self._ai_service is None:
+            from src.services.ai_thumbnail_service import ai_thumbnail_service
+            self._ai_service = ai_thumbnail_service
+        return self._ai_service
 
 
 # Singleton instance
