@@ -54,9 +54,7 @@ class RenderRequest(BaseModel):
     )
     desired_length: Optional[int] = Field(
         None,
-        ge=30,
-        le=120,
-        description="Desired video duration in seconds (30-120)"
+        description="Desired video duration in seconds (optional, no strict limits when auto-derived from base video)"
     )
     settings: Optional[RenderSettings] = None
 
@@ -99,9 +97,7 @@ class ManualRenderRequest(BaseModel):
     )
     desired_length: Optional[int] = Field(
         None,
-        ge=30,
-        le=120,
-        description="Desired video duration in seconds (30-120)"
+        description="Desired video duration in seconds (optional, no strict limits when auto-derived from base video)"
     )
     settings: Optional[RenderSettings] = None
 
