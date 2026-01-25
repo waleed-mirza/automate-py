@@ -6,8 +6,11 @@ from pathlib import Path
 from src.utils.constants import (
     DEFAULT_SUBTITLE_COLOR,
     DEFAULT_SUBTITLE_FONT,
+    DEFAULT_SUBTITLE_MARGIN_V,
     DEFAULT_SUBTITLE_OUTLINE,
     DEFAULT_SUBTITLE_SIZE,
+    HORIZONTAL_SUBTITLE_MARGIN_SCALE,
+    HORIZONTAL_SUBTITLE_SIZE_SCALE,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,7 @@ class SubtitleService:
             "outline": DEFAULT_SUBTITLE_OUTLINE,
             "shadow": 0,
             "alignment": 2,  # Bottom center
-            "margin_v": 20
+            "margin_v": DEFAULT_SUBTITLE_MARGIN_V
         }
 
     async def generate_subtitles(
@@ -76,6 +79,10 @@ class SubtitleService:
                     # Horizontal/square video -> Bottom center (Alignment 2)
                     logger.info("Horizontal/Square video detected, keeping default alignment (2)")
                     style["alignment"] = 2
+                    if not subtitle_style or "font_size" not in subtitle_style:
+                        style["font_size"] = int(round(style["font_size"] * HORIZONTAL_SUBTITLE_SIZE_SCALE))
+                    if not subtitle_style or "margin_v" not in subtitle_style:
+                        style["margin_v"] = int(round(style["margin_v"] * HORIZONTAL_SUBTITLE_MARGIN_SCALE))
             
             # Scale font size based on resolution (baseline 1080p)
             # scaled_size = int(style['font_size'] * play_res_y / 1080)

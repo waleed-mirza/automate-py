@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     cloudflare_account_id: str = ""
     cloudflare_api_token: str = ""
 
+    # OpenAI configuration
+    openai_api_key: str = ""
+
     # Signed URL configuration (seconds)
     s3_signed_url_expiration_seconds: int = 3600
 

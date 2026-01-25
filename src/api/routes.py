@@ -56,6 +56,14 @@ class RenderRequest(BaseModel):
         None,
         description="Desired video duration in seconds (optional, no strict limits when auto-derived from base video)"
     )
+    aspect_ratio: Optional[str] = Field(
+        "16:9",
+        description="Aspect ratio for generated images: 16:9, 9:16, or 1:1"
+    )
+    video_mode: Optional[str] = Field(
+        "base_video",
+        description="Video generation mode: 'base_video' or 'generated_images'"
+    )
     settings: Optional[RenderSettings] = None
 
 
@@ -99,6 +107,14 @@ class ManualRenderRequest(BaseModel):
         None,
         description="Desired video duration in seconds (optional, no strict limits when auto-derived from base video)"
     )
+    video_mode: Optional[str] = Field(
+        "base_video",
+        description="Video generation mode: 'base_video' or 'generated_images'"
+    )
+    aspect_ratio: Optional[str] = Field(
+        "16:9",
+        description="Aspect ratio for generated images: 16:9, 9:16, or 1:1"
+    )
     settings: Optional[RenderSettings] = None
 
 
@@ -126,6 +142,14 @@ def _validate_s3_field(url: str, field_name: str):
             status_code=400,
             detail=f"{field_name} must be s3://bucket/key"
         )
+
+
+def _resolve_aspect_dimensions(aspect_ratio: str) -> tuple[int, int]:
+    if aspect_ratio == "9:16":
+        return 1080, 1920
+    if aspect_ratio == "1:1":
+        return 1080, 1080
+    return 1920, 1080
 
 
 async def _download_audio_file(url: str, job_dir: Path, filename_stem: str) -> Path:
@@ -270,7 +294,9 @@ async def render_video(request: RenderRequest):
         subtitle_style=request.settings.subtitle_style if request.settings else None,
         resolution=request.settings.resolution if request.settings else None,
         title=request.title,
-        desired_duration=float(request.desired_length) if request.desired_length else None
+        desired_duration=float(request.desired_length) if request.desired_length else None,
+        video_mode=request.video_mode or "base_video",
+        aspect_ratio=request.aspect_ratio or "16:9"
     )
 
     # Add to queue
@@ -380,12 +406,21 @@ async def render_video_manual(request: ManualRenderRequest):
         # Generate per-sentence audio for subtitle timing
         await tts_service.generate_voiceover(sentences, job_dir)
 
-        # Download base video and get dimensions (for correct subtitle alignment/scaling)
-        base_video_path = await video_renderer.download_video(request.base_video_url, job_dir)
-        video_dimensions = await video_renderer.get_video_dimensions(base_video_path)
-        
-        if video_dimensions is None:
-            logger.warning(f"[{job_id}] Failed to get video dimensions, using default 1920x1080 for subtitles")
+        resolved_video_mode = request.video_mode or "base_video"
+        resolved_aspect_ratio = request.aspect_ratio or "16:9"
+        logger.info(f"[{job_id}] video_mode={resolved_video_mode}")
+        logger.info(f"[{job_id}] aspect_ratio={resolved_aspect_ratio}")
+
+        base_video_path = None
+        if resolved_video_mode == "generated_images":
+            video_dimensions = _resolve_aspect_dimensions(resolved_aspect_ratio)
+        else:
+            # Download base video and get dimensions (for correct subtitle alignment/scaling)
+            base_video_path = await video_renderer.download_video(request.base_video_url, job_dir)
+            video_dimensions = await video_renderer.get_video_dimensions(base_video_path)
+            if video_dimensions is None:
+                logger.warning(f"[{job_id}] Failed to get video dimensions, using default 1920x1080 for subtitles")
+                video_dimensions = _resolve_aspect_dimensions("16:9")
 
         subtitle_file = await subtitle_service.generate_subtitles(
             sentences,
@@ -410,14 +445,52 @@ async def render_video_manual(request: ManualRenderRequest):
             target_duration=float(request.desired_length) if request.desired_length else None
         )
 
-        final_video = await video_renderer.render_video(
-            base_video_path,
-            mixed_audio,
-            subtitle_file,
-            job_dir,
-            request.settings.resolution if request.settings else None,
-            desired_duration=float(request.desired_length) if request.desired_length else None
-        )
+        # Conditional rendering based on video_mode
+        if resolved_video_mode == "generated_images":
+            # Import services for image generation
+            from src.services.prompt_enhancement_service import prompt_enhancement_service
+            from src.services.ai_thumbnail_service import ai_thumbnail_service
+            
+            logger.info(f"[{job_id}] Generating AI images from script")
+            
+            # Enhance prompts using GPT
+            enhanced_prompts = await prompt_enhancement_service.enhance_prompts(sentences)
+            
+            # Generate images in parallel
+            image_paths = await ai_thumbnail_service.generate_images_batch(
+                enhanced_prompts,
+                job_dir,
+                aspect_ratio=resolved_aspect_ratio
+            )
+            
+            # Get durations from generated sentence audio files
+            durations = []
+            for i in range(len(sentences)):
+                sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
+                duration = await subtitle_service._get_audio_duration(sentence_file)
+                durations.append(duration)
+            
+            # Create video from images with Ken Burns effect
+            final_video = await video_renderer.create_video_from_images(
+                image_paths,
+                durations,
+                mixed_audio,
+                subtitle_file,
+                job_dir,
+                request.settings.resolution if request.settings else f"{video_dimensions[0]}x{video_dimensions[1]}"
+            )
+        else:
+            # Original base video rendering
+            if base_video_path is None:
+                base_video_path = await video_renderer.download_video(request.base_video_url, job_dir)
+            final_video = await video_renderer.render_video(
+                base_video_path,
+                mixed_audio,
+                subtitle_file,
+                job_dir,
+                request.settings.resolution if request.settings else None,
+                desired_duration=float(request.desired_length) if request.desired_length else None
+            )
 
         # Determine aspect ratio from video dimensions
         aspect_ratio = "16:9"  # default

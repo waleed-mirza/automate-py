@@ -10,12 +10,22 @@ from src.services.subtitle_service import subtitle_service
 from src.services.audio_mixer import audio_mixer
 from src.services.video_renderer import video_renderer
 from src.services.thumbnail_service import thumbnail_service
+from src.services.prompt_enhancement_service import prompt_enhancement_service
+from src.services.ai_thumbnail_service import ai_thumbnail_service
 from src.services.webhook_service import webhook_service
 from src.utils.s3_uploader import s3_uploader
 from src.utils.file_manager import file_manager
 from src.utils.constants import MAX_SENTENCE_COUNT, CLEANUP_ON_FAILURE, CLEANUP_ON_SUCCESS
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_aspect_dimensions(aspect_ratio: str) -> tuple[int, int]:
+    if aspect_ratio == "9:16":
+        return 1080, 1920
+    if aspect_ratio == "1:1":
+        return 1080, 1080
+    return 1920, 1080
 
 
 async def process_job(job: RenderJob):
@@ -63,13 +73,47 @@ async def process_job(job: RenderJob):
         logger.info(f"[{job_id}] Step 4: Sending voiceover_uploaded webhook")
         await webhook_service.send_voiceover_uploaded(job_id, voice_url)
 
+        resolved_video_mode = getattr(job, "video_mode", None) or "base_video"
+        resolved_aspect_ratio = getattr(job, "aspect_ratio", None) or "16:9"
+        logger.info(f"[{job_id}] video_mode={resolved_video_mode}")
+        logger.info(f"[{job_id}] aspect_ratio={resolved_aspect_ratio}")
+
+        # Step 4: Generate images if video_mode is "generated_images"
+        if resolved_video_mode == "generated_images":
+            logger.info(f"[{job_id}] Step 4: Generating AI images from script")
+            
+            # Enhance prompts using GPT
+            enhanced_prompts = await prompt_enhancement_service.enhance_prompts(sentences)
+            
+            # Generate images in parallel
+            image_paths = await ai_thumbnail_service.generate_images_batch(
+                enhanced_prompts,
+                job_dir,
+                aspect_ratio=resolved_aspect_ratio
+            )
+            
+            # Get durations from generated sentence audio files
+            durations = []
+            for i in range(len(sentences)):
+                sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
+                duration = await subtitle_service._get_audio_duration(sentence_file)
+                durations.append(duration)
+            
+            # Store image paths for later use in rendering
+            job.image_paths = image_paths
+            job.image_durations = durations
+
         # Step 4.5: Download base video and get dimensions
-        logger.info(f"[{job_id}] Step 4.5: Downloading base video and getting dimensions")
-        base_video_path = await video_renderer.download_video(job.base_video_url, job_dir)
-        video_dimensions = await video_renderer.get_video_dimensions(base_video_path)
-        
-        if video_dimensions is None:
-            logger.warning(f"[{job_id}] Failed to get video dimensions, using default 1920x1080 for subtitles")
+        logger.info(f"[{job_id}] Step 4.5: Resolving video dimensions")
+        base_video_path = None
+        if resolved_video_mode == "generated_images":
+            video_dimensions = _resolve_aspect_dimensions(resolved_aspect_ratio)
+        else:
+            base_video_path = await video_renderer.download_video(job.base_video_url, job_dir)
+            video_dimensions = await video_renderer.get_video_dimensions(base_video_path)
+            if video_dimensions is None:
+                logger.warning(f"[{job_id}] Failed to get video dimensions, using default 1920x1080 for subtitles")
+                video_dimensions = _resolve_aspect_dimensions("16:9")
 
         # Step 5: Generate subtitles
         logger.info(f"[{job_id}] Step 5: Generating subtitles")
@@ -91,14 +135,31 @@ async def process_job(job: RenderJob):
 
         # Step 7: Render final video
         logger.info(f"[{job_id}] Step 7: Rendering video")
-        final_video = await video_renderer.render_video(
-            base_video_path,
-            mixed_audio,
-            subtitle_file,
-            job_dir,
-            job.resolution,
-            desired_duration=job.desired_duration
-        )
+        if resolved_video_mode == "generated_images":
+            if job.image_paths is None or job.image_durations is None:
+                raise ValueError("Generated images or durations are missing for generated_images mode")
+            final_video = await video_renderer.create_video_from_images(
+                job.image_paths,
+                job.image_durations,
+                mixed_audio,
+                subtitle_file,
+                job_dir,
+                job.resolution
+                if job.resolution
+                else f"{video_dimensions[0]}x{video_dimensions[1]}"
+            )
+        else:
+            # Existing base video rendering
+            if base_video_path is None:
+                base_video_path = await video_renderer.download_video(job.base_video_url, job_dir)
+            final_video = await video_renderer.render_video(
+                base_video_path,
+                mixed_audio,
+                subtitle_file,
+                job_dir,
+                job.resolution,
+                desired_duration=job.desired_duration
+            )
 
         # Step 7.5: Generate thumbnail (non-blocking)
         thumbnail_url = None

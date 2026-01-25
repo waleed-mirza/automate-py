@@ -475,6 +475,153 @@ class VideoRenderer:
         except Exception as e:
             raise RuntimeError(f"Failed to render video: {str(e)}")
 
+    async def create_video_from_images(
+        self,
+        image_paths: list[Path],
+        durations: list[float],
+        audio_file: Path,
+        subtitle_file: Path,
+        job_dir: Path,
+        resolution: str | None = None
+    ) -> Path:
+        """
+        Create video from image sequence with Ken Burns effect and crossfades.
+        
+        Args:
+            image_paths: List of image file paths
+            durations: Duration for each image (matches TTS audio segments)
+            audio_file: Path to audio file
+            subtitle_file: Path to ASS subtitle file
+            job_dir: Job directory
+            resolution: Optional resolution (e.g. "1920x1080")
+            
+        Returns:
+            Path to final video file
+        """
+        logger.info(f"Creating video from {len(image_paths)} images")
+        
+        if len(image_paths) != len(durations):
+            raise ValueError("Number of images must match number of durations")
+
+        # Parse resolution or default
+        width, height = 1920, 1080
+        if resolution:
+            try:
+                w, h = map(int, resolution.split("x"))
+                width, height = w, h
+            except ValueError:
+                logger.warning(f"Invalid resolution format: {resolution}, using default 1920x1080")
+
+        # 1. Create video segments
+        segment_files = []
+        try:
+            for i, (img_path, duration) in enumerate(zip(image_paths, durations)):
+                segment_file = job_dir / f"segment_{i:03d}.mp4"
+                
+                # Calculate frames for zoompan (assuming 30fps)
+                # Ensure duration is at least slightly longer than crossfade (0.5s) if possible
+                # But we must follow the duration spec.
+                frames = int(duration * 30)
+                
+                # Ken Burns effect: zoom in
+                # zoompan=z='min(zoom+0.0015,1.5)':d={duration*30}:s=WxH
+                zoompan_filter = (
+                    f"zoompan=z='min(zoom+0.0015,1.5)':d={frames}:s={width}x{height},"
+                    f"format=yuv420p"
+                )
+                
+                cmd = [
+                    "ffmpeg",
+                    "-loop", "1",
+                    "-i", str(img_path),
+                    "-vf", zoompan_filter,
+                    "-t", str(duration),
+                    "-c:v", "libx264",
+                    "-preset", self.ffmpeg_preset,
+                    "-r", "30",
+                    "-an",
+                    str(segment_file),
+                    "-y"
+                ]
+                
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+                segment_files.append(segment_file)
+
+            # 2 & 3. Combine segments with crossfade
+            combined_video = job_dir / "combined_segments.mp4"
+            
+            if len(segment_files) == 1:
+                # Just copy the single segment
+                cmd = [
+                    "ffmpeg", "-i", str(segment_files[0]),
+                    "-c", "copy", str(combined_video), "-y"
+                ]
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+            else:
+                # Build complex filter for xfade
+                inputs = []
+                for f in segment_files:
+                    inputs.extend(["-i", str(f)])
+                
+                # Iterate to build filter chain
+                filter_chain = ""
+                current_offset = 0.0
+                crossfade_dur = 0.5
+                last_label = "0:v"
+                
+                for i in range(1, len(segment_files)):
+                    prev_original_dur = durations[i-1]
+                    
+                    if i == 1:
+                        transition_offset = prev_original_dur - crossfade_dur
+                    else:
+                        transition_offset = current_offset + prev_original_dur - crossfade_dur
+                    
+                    next_label = f"v{i}"
+                    if i == len(segment_files) - 1:
+                        next_label = "v_out"
+                        
+                    filter_chain += (
+                        f"[{last_label}][{i}:v]xfade=transition=fade:"
+                        f"duration={crossfade_dur}:offset={transition_offset:.3f}[{next_label}];"
+                    )
+                    
+                    last_label = next_label
+                    current_offset = transition_offset
+                
+                cmd = ["ffmpeg"] + inputs + [
+                    "-filter_complex", filter_chain.rstrip(";"),
+                    "-map", f"[{last_label}]",
+                    "-c:v", "libx264",
+                    "-preset", self.ffmpeg_preset,
+                    "-an",
+                    str(combined_video),
+                    "-y"
+                ]
+                
+                logger.debug(f"Combining segments with xfade: {' '.join(cmd)}")
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            # 4 & 5 & 6. Final render with subtitles and audio
+            final_video = job_dir / "final.mp4"
+            await self._render_with_ffmpeg(
+                combined_video,
+                audio_file,
+                subtitle_file,
+                final_video,
+                resolution,
+                use_shortest=True # Audio might be longer/shorter, fit to video usually? Or use_shortest=True ensures we stop when video stops
+            )
+            
+            return final_video
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg failed in create_video_from_images: {e.stderr}")
+            raise RuntimeError(f"Failed to create video from images: {e.stderr}")
+        except Exception as e:
+            logger.error(f"Error in create_video_from_images: {str(e)}")
+            raise
+
     async def bake_thumbnail_into_video(
         self,
         video_file: Path,

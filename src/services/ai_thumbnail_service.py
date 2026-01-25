@@ -1,6 +1,7 @@
 import logging
 import httpx
 import base64
+import asyncio
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
@@ -57,6 +58,49 @@ class AIThumbnailService:
         final_image.convert("RGB").save(output_path, "JPEG", quality=95)
         
         return output_path
+
+    async def generate_images_batch(
+        self,
+        prompts: list[str],
+        job_dir: Path,
+        aspect_ratio: str = "16:9"
+    ) -> list[Path]:
+        """Generate multiple images from prompts in parallel.
+        
+        Args:
+            prompts: List of image generation prompts
+            job_dir: Directory to save images
+            aspect_ratio: Aspect ratio for images
+            
+        Returns:
+            List of paths to generated images (image_0.jpg, image_1.jpg, etc.)
+        """
+        # 1. Get dimensions for aspect ratio
+        dims = self.ASPECT_DIMENSIONS.get(aspect_ratio, self.ASPECT_DIMENSIONS["16:9"])
+        
+        async def generate_one(index: int, prompt: str) -> Path | None:
+            try:
+                # 3. Call _generate_background
+                bg_image = await self._generate_background(prompt, dims["gen"])
+                
+                # 4. Resize to final dimensions
+                bg_image = bg_image.resize(dims["final"], Image.Resampling.LANCZOS)
+                
+                # 5. Save as image_X.jpg
+                output_path = job_dir / f"image_{index}.jpg"
+                bg_image.convert("RGB").save(output_path, "JPEG", quality=95)
+                return output_path
+            except Exception as e:
+                # 7. Error handling
+                logger.warning(f"Failed to generate image {index} for batch: {e}")
+                return None
+
+        # 2. Use asyncio.gather
+        tasks = [generate_one(i, p) for i, p in enumerate(prompts)]
+        results = await asyncio.gather(*tasks)
+        
+        # 6. Return list of paths (filtering out failures)
+        return [path for path in results if path is not None]
     
     def _extract_hook(self, script: str, title: str | None) -> str:
         """Extract 2-4 word hook from script or title."""
@@ -72,12 +116,14 @@ class AIThumbnailService:
     
     def _build_prompt(self, script: str) -> str:
         """Build Cloudflare AI prompt for thumbnail background."""
-        # Extract theme/topic from script
-        first_sentence = script.split('.')[0][:100]
+        # Use the full script for richer context (trimmed to a safe length)
+        script_context = " ".join(script.split())[:400]
         return (
-            f"Eye-catching YouTube thumbnail background about: {first_sentence}. "
-            "Vibrant colors, high contrast, cinematic lighting, professional, "
-            "clean composition with space for text overlay, no text in image."
+            f"Create a highly clickable YouTube thumbnail background based on: {script_context}. "
+            "Center a clear focal subject, dramatic perspective, and strong visual hierarchy. "
+            "Vibrant saturated colors with bold contrast, cinematic lighting, rim light, and subtle glow. "
+            "Clean background with depth (foreground, midground, background) and gentle bokeh. "
+            "Use rule of thirds, leave generous negative space for text overlay, no text in image."
         )
     
     async def _generate_background(self, prompt: str, dimensions: tuple[int, int]) -> Image.Image:

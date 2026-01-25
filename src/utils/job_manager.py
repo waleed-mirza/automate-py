@@ -32,6 +32,10 @@ class RenderJob:
     resolution: Optional[str] = None
     title: Optional[str] = None
     desired_duration: Optional[float] = None
+    video_mode: str = "base_video"  # "base_video" or "generated_images"
+    aspect_ratio: str = "16:9"
+    image_paths: Optional[list] = None  # For generated_images mode
+    image_durations: Optional[list] = None  # For generated_images mode
 
 
 class JobManager:
