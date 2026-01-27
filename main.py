@@ -60,6 +60,11 @@ async def startup_event():
     logger.info("Starting Video Rendering Service")
     logger.info(f"Max concurrent jobs: {settings.max_concurrent_jobs}")
 
+    from src.utils.job_manager import get_job_manager
+
+    job_manager = get_job_manager()
+    await job_manager.initialize()
+
     # Start background workers
     app.state.worker_tasks = await start_workers(num_workers=settings.max_concurrent_jobs)
     logger.info(f"Started {len(app.state.worker_tasks)} background workers")
@@ -77,6 +82,11 @@ async def shutdown_event():
         # Wait for workers to finish
         await asyncio.gather(*app.state.worker_tasks, return_exceptions=True)
         logger.info("Background workers stopped")
+
+    from src.utils.job_manager import get_job_manager
+
+    job_manager = get_job_manager()
+    await job_manager.close()
 
 
 if __name__ == "__main__":

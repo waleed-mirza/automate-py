@@ -4,7 +4,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg wget ca-certificates libespeak-ng1 espeak-ng-data libsndfile1 \
+    && apt-get install -y --no-install-recommends \
+       ffmpeg \
+       wget \
+       ca-certificates \
+       libespeak-ng1 \
+       espeak-ng-data \
+       libsndfile1 \
+       fonts-noto-core \
+       fonts-noto-ui-core \
+       fonts-noto-extra \
+       fontconfig \
+    && fc-cache -fv \
     && mkdir -p /usr/share/espeak-ng-data \
     && if [ -f /usr/share/espeak-ng-data/phontab ]; then true; \
        else \

@@ -67,6 +67,63 @@ class WebhookService:
 
         await self._send_webhook("video_completed", payload)
 
+    async def send_job_failed(
+        self,
+        job_id: str,
+        error: str,
+        step: Optional[str] = None,
+        error_type: Optional[str] = None
+    ):
+        """
+        Send webhook notification when a job fails.
+
+        Args:
+            job_id: Job ID
+            error: Error message
+            step: Current step when failure occurred
+            error_type: Type of error (e.g., "validation", "processing", "upload")
+        """
+        payload = {
+            "event": "job_failed",
+            "job_id": job_id,
+            "error": error,
+            "step": step,
+            "error_type": error_type or "processing",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+
+        await self._send_webhook("job_failed", payload)
+
+    async def send_status_update(
+        self,
+        job_id: str,
+        status: str,
+        step: Optional[str] = None,
+        progress: Optional[int] = None,
+        message: Optional[str] = None
+    ):
+        """
+        Send webhook notification for status updates.
+
+        Args:
+            job_id: Job ID
+            status: Current status (queued, processing, completed, failed)
+            step: Current processing step
+            progress: Progress percentage (0-100)
+            message: Optional status message
+        """
+        payload = {
+            "event": "status_update",
+            "job_id": job_id,
+            "status": status,
+            "step": step,
+            "progress": progress,
+            "message": message,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+
+        await self._send_webhook("status_update", payload)
+
     async def _send_webhook(self, event: str, payload: dict):
         """
         Send webhook notification.

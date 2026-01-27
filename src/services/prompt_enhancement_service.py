@@ -53,6 +53,7 @@ class PromptEnhancementService:
             "temperature": 0.7
         }
         
+        content = ""
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
@@ -78,7 +79,16 @@ class PromptEnhancementService:
                 
                 content = content.strip()
                 
-                enhanced_prompts = json.loads(content)
+                # Extract JSON array - find first '[' and last ']'
+                start_idx = content.find('[')
+                end_idx = content.rfind(']')
+                
+                if start_idx == -1 or end_idx == -1 or start_idx >= end_idx:
+                    logger.error(f"No valid JSON array found in response. Content: {content[:500]}")
+                    raise ValueError("OpenAI response does not contain a valid JSON array")
+                
+                json_content = content[start_idx:end_idx + 1]
+                enhanced_prompts = json.loads(json_content)
                 
                 if not isinstance(enhanced_prompts, list):
                     raise ValueError("OpenAI returned non-list format")
@@ -97,7 +107,7 @@ class PromptEnhancementService:
                 return enhanced_prompts
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse OpenAI JSON response: {e}. Content: {content}")
+            logger.error(f"Failed to parse OpenAI JSON response: {e}. Content: {content[:1000] if content else 'N/A'}")
             raise
         except Exception as e:
             logger.error(f"Error in enhance_prompts: {e}")

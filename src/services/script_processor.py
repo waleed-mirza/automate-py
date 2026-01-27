@@ -28,6 +28,9 @@ class ScriptProcessor:
         """
         logger.info(f"Processing script ({len(script)} characters)")
 
+        # Normalize Hindi punctuation before processing
+        script = self._normalize_hindi_punctuation(script)
+
         # Normalize whitespace and remove extra spaces
         script = " ".join(script.split())
 
@@ -40,17 +43,60 @@ class ScriptProcessor:
         # Split long sentences
         sentences = self._split_long_sentences(sentences)
 
-        # Final cleanup
-        sentences = [s.strip() for s in sentences if s.strip()]
+        # Final cleanup - remove trailing punctuation for TTS
+        sentences = [self._clean_for_tts(s.strip()) for s in sentences if s.strip()]
 
         logger.info(f"Processed script into {len(sentences)} sentences")
         return sentences
 
+    def _normalize_hindi_punctuation(self, text: str) -> str:
+        """
+        Normalize punctuation for Hindi text.
+        Replaces English periods with Hindi danda if Hindi characters are detected.
+        """
+        # Check if text contains Hindi (Devanagari) characters
+        has_hindi = any('\u0900' <= char <= '\u097F' for char in text)
+        
+        if has_hindi:
+            # Replace English sentence-ending punctuation with Hindi equivalents
+            # Replace . with Hindi danda । (U+0964)
+            text = text.replace('.', '।')
+            # Keep ? and ! as they are used in both languages
+        
+        return text
+
+    def _clean_for_tts(self, text: str) -> str:
+        """
+        Clean text for TTS to avoid pronunciation of punctuation and AI tokens.
+        Removes trailing punctuation and common LLM artifacts.
+        """
+        # First, remove common AI/LLM tokens that might be pronounced
+        tokens_to_remove = [
+            '<eos>', '[EOS]', '</s>', '<s>', '[/s]',
+            '(EOS)', '<EOS>', '<end>', '[END]', '(Pause)',
+            '<pause>', '[pause]'
+        ]
+        
+        for token in tokens_to_remove:
+            text = text.replace(token, '')
+        
+        # Remove trailing punctuation marks (., ?, !, ।)
+        # The TTS engine will add natural pauses between sentences
+        text = text.rstrip('.?!।')
+        
+        # Clean up any extra whitespace introduced by token removal
+        text = ' '.join(text.split())
+        
+        return text
+
     def _split_sentences(self, text: str) -> list[str]:
-        """Split text into sentences using regex"""
-        # Split on sentence-ending punctuation followed by space and capital letter
-        # Also handle common abbreviations
-        pattern = r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s+(?=[A-Z])'
+        """Split text into sentences using regex (supports Hindi and English)"""
+        # Split on sentence-ending punctuation followed by space
+        # Supports both English (., ?, !) and Hindi danda (।)
+        # Removed uppercase restriction to support Hindi scripts
+        pattern = (
+            r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=(?:\.|।|\?|!))\s+'
+        )
         sentences = re.split(pattern, text)
         return sentences
 

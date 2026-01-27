@@ -3,6 +3,7 @@ uvicorn[standard]==0.27.0
 pydantic==2.5.3
 pydantic-settings==2.1.0
 httpx==0.26.0
+aiosqlite==0.20.0
 boto3==1.34.28
 python-multipart==0.0.6
 kokoro-onnx==0.4.9

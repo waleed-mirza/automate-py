@@ -9,6 +9,7 @@ from src.utils.constants import (
     DOWNLOAD_TIMEOUT_SECONDS,
     FFMPEG_PRESET,
     MAX_VIDEO_SIZE_MB,
+    VIDEO_CROSSFADE_DURATION,
 )
 from src.utils.s3_uploader import s3_uploader
 
@@ -384,6 +385,9 @@ class VideoRenderer:
                     extension = "." + ext
 
             base_video = job_dir / f"base{extension}"
+            if base_video.exists() and base_video.stat().st_size > 0:
+                logger.info(f"Using cached base video: {base_video}")
+                return base_video
             max_bytes = MAX_VIDEO_SIZE_MB * 1024 * 1024
             downloaded_bytes = 0
 
@@ -566,7 +570,7 @@ class VideoRenderer:
                 # Iterate to build filter chain
                 filter_chain = ""
                 current_offset = 0.0
-                crossfade_dur = 0.5
+                crossfade_dur = VIDEO_CROSSFADE_DURATION
                 last_label = "0:v"
                 
                 for i in range(1, len(segment_files)):

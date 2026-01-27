@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from config import settings
+from src.utils.constants import VIDEO_CROSSFADE_DURATION
 
 try:
     from kokoro_onnx import Kokoro
@@ -27,23 +28,39 @@ class BaseTTSProvider:
     Base class for TTS providers that generate per-sentence WAVs and a voice.wav.
     """
 
-    async def generate_voiceover(self, sentences: list[str], job_dir: Path) -> Path:
+    async def generate_voiceover(
+        self,
+        sentences: list[str],
+        job_dir: Path,
+        language: str | None = None,
+    ) -> Path:
         logger.info(f"Generating voiceover for {len(sentences)} sentences (job: {job_dir.name})")
 
         sentence_files = []
         for i, sentence in enumerate(sentences):
             sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
-            await self._generate_sentence_audio(sentence, sentence_file)
+            if sentence_file.exists() and sentence_file.stat().st_size > 0:
+                logger.debug(f"Using cached audio for sentence {i+1}/{len(sentences)}")
+            else:
+                await self._generate_sentence_audio(sentence, sentence_file, language)
             sentence_files.append(sentence_file)
             logger.debug(f"Generated audio for sentence {i+1}/{len(sentences)}")
 
         voice_file = job_dir / "voice.wav"
+        if voice_file.exists() and voice_file.stat().st_size > 0:
+            logger.info(f"Using cached voiceover: {voice_file}")
+            return voice_file
         await self._concatenate_audio(sentence_files, voice_file)
 
         logger.info(f"Voiceover generation complete: {voice_file}")
         return voice_file
 
-    async def _generate_sentence_audio(self, text: str, output_path: Path):
+    async def _generate_sentence_audio(
+        self,
+        text: str,
+        output_path: Path,
+        language: str | None = None,
+    ):
         raise NotImplementedError
 
     async def _concatenate_audio(self, audio_files: list[Path], output_path: Path):
@@ -85,6 +102,107 @@ class BaseTTSProvider:
         except Exception as e:
             raise RuntimeError(f"Failed to concatenate audio: {str(e)}")
 
+    async def create_gapped_audio(
+        self,
+        job_dir: Path,
+        extended_durations: list[float],
+        lead_time: float,
+        output_filename: str = "voice_gapped.wav"
+    ) -> Path:
+        """
+        Create audio file with silence gaps matching extended image durations.
+        
+        IMPORTANT: Account for video crossfade overlap (0.5s between segments).
+        The video shrinks due to crossfade, so audio segments must also be shorter
+        to maintain sync.
+        
+        Args:
+            job_dir: Job directory containing sentence audio files
+            extended_durations: Extended duration for each image segment
+            lead_time: Lead time before each sentence audio
+            output_filename: Output filename
+            
+        Returns:
+            Path to gapped audio file
+        """
+        output_path = job_dir / output_filename
+        
+        try:
+            # Build filter complex to add silence gaps
+            filter_parts = []
+            input_args = []
+            num_segments = len(extended_durations)
+            
+            for i, extended_dur in enumerate(extended_durations):
+                sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
+                if not sentence_file.exists():
+                    logger.warning(f"Sentence file not found: {sentence_file}")
+                    continue
+                
+                input_args.extend(["-i", str(sentence_file)])
+                
+                # Calculate silence durations
+                # extended_dur = lead_time + audio_duration + adaptive_buffer + linger_time
+                # We need: lead_time silence + audio + (adaptive_buffer + linger_time) silence
+                
+                # Get actual audio duration
+                probe_cmd = [
+                    "ffprobe",
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(sentence_file)
+                ]
+                result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+                audio_duration = float(result.stdout.strip())
+                
+                # Account for crossfade overlap: each segment except the last is shortened
+                # because the video segments overlap during crossfade
+                effective_dur = extended_dur
+                if i < num_segments - 1:
+                    effective_dur -= VIDEO_CROSSFADE_DURATION
+                
+                # Calculate trailing silence
+                trailing_silence = effective_dur - lead_time - audio_duration
+                
+                # Create filter: lead silence + audio + trailing silence
+                # Use adelay for lead time, apad for trailing
+                filter_parts.append(
+                    f"[{i}:a]adelay={int(lead_time * 1000)}|{int(lead_time * 1000)},"
+                    f"apad=whole_dur={effective_dur}[a{i}]"
+                )
+            
+            if not filter_parts:
+                raise ValueError("No valid sentence audio files found")
+            
+            # Concatenate all segments
+            filter_complex = ";".join(filter_parts)
+            concat_inputs = "".join(f"[a{i}]" for i in range(len(filter_parts)))
+            filter_complex += f";{concat_inputs}concat=n={len(filter_parts)}:v=0:a=1[out]"
+            
+            cmd = [
+                "ffmpeg",
+                *input_args,
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-c:a", "pcm_s16le",
+                str(output_path),
+                "-y"
+            ]
+            
+            logger.debug(f"Creating gapped audio with command: {' '.join(cmd)}")
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            
+            logger.info(f"Created gapped audio: {output_path}")
+            return output_path
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg gapped audio creation failed: {e.stderr}")
+            raise RuntimeError(f"Failed to create gapped audio: {e.stderr}")
+        except Exception as e:
+            logger.error(f"Error creating gapped audio: {str(e)}")
+            raise RuntimeError(f"Failed to create gapped audio: {str(e)}")
+
 
 class PiperTTSProvider(BaseTTSProvider):
     """
@@ -123,7 +241,12 @@ class PiperTTSProvider(BaseTTSProvider):
             )
         return resolved
 
-    async def _generate_sentence_audio(self, text: str, output_path: Path):
+    async def _generate_sentence_audio(
+        self,
+        text: str,
+        output_path: Path,
+        language: str | None = None,
+    ):
         try:
             if not self.piper_path:
                 self.piper_path = self._resolve_piper_path()
@@ -179,8 +302,25 @@ class KokoroTTSProvider(BaseTTSProvider):
         self.model_path = settings.kokoro_model_path
         self.voices_path = settings.kokoro_voices_path
         self.speaker = settings.kokoro_speaker
+        self.speaker_en = settings.kokoro_speaker_en or settings.kokoro_speaker
+        self.speaker_hi = settings.kokoro_speaker_hi
         self.threads = settings.kokoro_threads
         self._model: Kokoro | None = None
+
+    @staticmethod
+    def _is_hindi(text: str) -> bool:
+        return any("\u0900" <= char <= "\u097F" for char in text)
+
+    def _select_voice(self, text: str, language: str | None = None) -> str:
+        if language:
+            normalized = language.strip().lower()
+            if normalized == "hi":
+                return self.speaker_hi or self.speaker_en
+            if normalized == "en":
+                return self.speaker_en
+        if self._is_hindi(text):
+            return self.speaker_hi or self.speaker_en
+        return self.speaker_en
 
     def _resolve_voices_file(self) -> Path:
         voices_path = Path(self.voices_path)
@@ -222,13 +362,29 @@ class KokoroTTSProvider(BaseTTSProvider):
 
         self._model = Kokoro(str(model_path), str(voices_file))
 
-    async def _generate_sentence_audio(self, text: str, output_path: Path):
+    async def _generate_sentence_audio(
+        self,
+        text: str,
+        output_path: Path,
+        language: str | None = None,
+    ):
         try:
             self._ensure_model()
             if not self._model:
                 raise RuntimeError("Kokoro model failed to load")
 
-            audio, sample_rate = self._model.create(text, voice=self.speaker)
+            voice = self._select_voice(text, language)
+            
+            # Determine language for Kokoro phonemizer
+            kokoro_lang = 'en-us'  # default
+            if language:
+                normalized = language.strip().lower()
+                if normalized == 'hi':
+                    kokoro_lang = 'hi'  # Hindi language code
+            elif self._is_hindi(text):
+                kokoro_lang = 'hi'
+            
+            audio, sample_rate = self._model.create(text, voice=voice, lang=kokoro_lang)
             sf.write(str(output_path), audio, sample_rate, subtype="PCM_16")
 
         except Exception as e:
@@ -259,9 +415,36 @@ class TTSService:
             logger.info(f"TTS provider set to '{provider_name}'")
         return self._provider
 
-    async def generate_voiceover(self, sentences: list[str], job_dir: Path) -> Path:
+    async def generate_voiceover(
+        self,
+        sentences: list[str],
+        job_dir: Path,
+        language: str | None = None,
+    ) -> Path:
         provider = self._get_provider()
-        return await provider.generate_voiceover(sentences, job_dir)
+        return await provider.generate_voiceover(sentences, job_dir, language)
+
+    async def create_gapped_audio(
+        self,
+        job_dir: Path,
+        extended_durations: list[float],
+        lead_time: float,
+        output_filename: str = "voice_gapped.wav"
+    ) -> Path:
+        """
+        Create audio file with silence gaps matching extended image durations.
+        
+        Args:
+            job_dir: Job directory containing sentence audio files
+            extended_durations: Extended duration for each image segment
+            lead_time: Lead time before each sentence audio
+            output_filename: Output filename
+            
+        Returns:
+            Path to gapped audio file
+        """
+        provider = self._get_provider()
+        return await provider.create_gapped_audio(job_dir, extended_durations, lead_time, output_filename)
 
 
 tts_service = TTSService()

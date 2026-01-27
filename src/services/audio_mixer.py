@@ -3,6 +3,7 @@ import logging
 import json
 import asyncio
 from pathlib import Path
+from typing import Optional
 import httpx
 
 from src.utils.constants import DOWNLOAD_TIMEOUT_SECONDS, MAX_AUDIO_SIZE_MB
@@ -30,7 +31,7 @@ class AudioMixer:
         self,
         voice_file: Path,
         job_dir: Path,
-        bgm_url: str = None,
+        bgm_url: Optional[str] = None,
         target_duration: float | None = None
     ) -> Path:
         """
@@ -146,6 +147,9 @@ class AudioMixer:
                     extension = "." + ext
 
             bgm_file = job_dir / f"bgm{extension}"
+            if bgm_file.exists() and bgm_file.stat().st_size > 0:
+                logger.info(f"Using cached background music: {bgm_file}")
+                return bgm_file
             max_bytes = MAX_AUDIO_SIZE_MB * 1024 * 1024
             downloaded_bytes = 0
 

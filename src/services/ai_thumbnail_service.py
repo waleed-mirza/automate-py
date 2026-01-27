@@ -79,28 +79,50 @@ class AIThumbnailService:
         dims = self.ASPECT_DIMENSIONS.get(aspect_ratio, self.ASPECT_DIMENSIONS["16:9"])
         
         async def generate_one(index: int, prompt: str) -> Path | None:
-            try:
-                # 3. Call _generate_background
-                bg_image = await self._generate_background(prompt, dims["gen"])
-                
-                # 4. Resize to final dimensions
-                bg_image = bg_image.resize(dims["final"], Image.Resampling.LANCZOS)
-                
-                # 5. Save as image_X.jpg
-                output_path = job_dir / f"image_{index}.jpg"
-                bg_image.convert("RGB").save(output_path, "JPEG", quality=95)
-                return output_path
-            except Exception as e:
-                # 7. Error handling
-                logger.warning(f"Failed to generate image {index} for batch: {e}")
-                return None
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    output_path = job_dir / f"image_{index}.jpg"
+                    if output_path.exists() and output_path.stat().st_size > 0:
+                        logger.debug(f"Using cached image {output_path.name}")
+                        return output_path
+
+                    # 3. Call _generate_background
+                    bg_image = await self._generate_background(prompt, dims["gen"])
+                    
+                    # 4. Resize to final dimensions
+                    bg_image = bg_image.resize(dims["final"], Image.Resampling.LANCZOS)
+                    
+                    # 5. Save as image_X.jpg
+                    bg_image.convert("RGB").save(output_path, "JPEG", quality=95)
+                    return output_path
+                except Exception as e:
+                    # 7. Error handling with retry
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Failed to generate image {index} (attempt {attempt + 1}/{max_retries}): {e}. Retrying...")
+                        await asyncio.sleep(1)  # Brief delay before retry
+                    else:
+                        logger.error(f"Failed to generate image {index} after {max_retries} attempts: {e}")
+                        return None
+            return None
 
         # 2. Use asyncio.gather
         tasks = [generate_one(i, p) for i, p in enumerate(prompts)]
         results = await asyncio.gather(*tasks)
         
         # 6. Return list of paths (filtering out failures)
-        return [path for path in results if path is not None]
+        successful_paths = [path for path in results if path is not None]
+        failed_count = len(results) - len(successful_paths)
+        
+        if failed_count > 0:
+            logger.warning(
+                f"Image generation batch: {len(successful_paths)}/{len(prompts)} succeeded, "
+                f"{failed_count} failed"
+            )
+        else:
+            logger.info(f"Image generation batch: All {len(prompts)} images generated successfully")
+        
+        return successful_paths
     
     def _extract_hook(self, script: str, title: str | None) -> str:
         """Extract 2-4 word hook from script or title."""

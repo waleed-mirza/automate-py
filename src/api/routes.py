@@ -64,12 +64,20 @@ class RenderRequest(BaseModel):
         "base_video",
         description="Video generation mode: 'base_video' or 'generated_images'"
     )
+    language: Optional[str] = Field(
+        None,
+        description="Language code for TTS voice selection (e.g., en, hi)"
+    )
     settings: Optional[RenderSettings] = None
 
 
 class VoiceoverRequest(BaseModel):
     """Request model for /voiceover endpoint"""
     script: str = Field(..., description="Raw text script to process")
+    language: Optional[str] = Field(
+        None,
+        description="Language code for TTS voice selection (e.g., en, hi)"
+    )
 
 
 class VoiceoverResponse(BaseModel):
@@ -114,6 +122,10 @@ class ManualRenderRequest(BaseModel):
     aspect_ratio: Optional[str] = Field(
         "16:9",
         description="Aspect ratio for generated images: 16:9, 9:16, or 1:1"
+    )
+    language: Optional[str] = Field(
+        None,
+        description="Language code for TTS voice selection (e.g., en, hi)"
     )
     settings: Optional[RenderSettings] = None
 
@@ -296,12 +308,13 @@ async def render_video(request: RenderRequest):
         title=request.title,
         desired_duration=float(request.desired_length) if request.desired_length else None,
         video_mode=request.video_mode or "base_video",
-        aspect_ratio=request.aspect_ratio or "16:9"
+        aspect_ratio=request.aspect_ratio or "16:9",
+        language=request.language,
     )
 
     # Add to queue
     job_manager = get_job_manager()
-    job_manager.add_job(job)
+    await job_manager.add_job(job)
 
     logger.info(f"Job {job_id} queued (queue size: {job_manager.get_queue_size()})")
 
@@ -344,7 +357,7 @@ async def generate_voiceover(request: VoiceoverRequest):
                 f"Script produces too many sentences. Maximum {MAX_SENTENCE_COUNT} allowed."
             )
 
-        voice_file = await tts_service.generate_voiceover(sentences, job_dir)
+        voice_file = await tts_service.generate_voiceover(sentences, job_dir, language=request.language)
         voice_url = await s3_uploader.upload_voice(voice_file, job_id)
 
         job_succeeded = True
@@ -404,7 +417,7 @@ async def render_video_manual(request: ManualRenderRequest):
             )
 
         # Generate per-sentence audio for subtitle timing
-        await tts_service.generate_voiceover(sentences, job_dir)
+        await tts_service.generate_voiceover(sentences, job_dir, language=request.language)
 
         resolved_video_mode = request.video_mode or "base_video"
         resolved_aspect_ratio = request.aspect_ratio or "16:9"
@@ -422,13 +435,6 @@ async def render_video_manual(request: ManualRenderRequest):
                 logger.warning(f"[{job_id}] Failed to get video dimensions, using default 1920x1080 for subtitles")
                 video_dimensions = _resolve_aspect_dimensions("16:9")
 
-        subtitle_file = await subtitle_service.generate_subtitles(
-            sentences,
-            job_dir,
-            request.settings.subtitle_style if request.settings else None,
-            video_dimensions
-        )
-
         voice_input = await _download_audio_file(
             request.voiceover_url,
             job_dir,
@@ -437,13 +443,6 @@ async def render_video_manual(request: ManualRenderRequest):
         voice_file = _ensure_wav(voice_input, job_dir / "voice.wav")
 
         voice_url = request.voiceover_url
-
-        mixed_audio = await audio_mixer.mix_audio(
-            voice_file,
-            job_dir,
-            request.bgm_url,
-            target_duration=float(request.desired_length) if request.desired_length else None
-        )
 
         # Conditional rendering based on video_mode
         if resolved_video_mode == "generated_images":
@@ -463,12 +462,64 @@ async def render_video_manual(request: ManualRenderRequest):
                 aspect_ratio=resolved_aspect_ratio
             )
             
-            # Get durations from generated sentence audio files
+            # Get durations from generated sentence audio files with adaptive pacing
+            # Define timing constants for natural pacing (reduced by 50%)
+            lead_time = 0.25  # Viewer sees image before narration starts
+            linger_time = 0.5  # Viewer processes visual after narration ends
+            
             durations = []
+            audio_durations = []  # Store original audio durations for subtitle timing
             for i in range(len(sentences)):
                 sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
-                duration = await subtitle_service._get_audio_duration(sentence_file)
-                durations.append(duration)
+                audio_duration = await subtitle_service._get_audio_duration(sentence_file)
+                audio_durations.append(audio_duration)
+                
+                # Calculate extended duration for natural pacing
+                # Adaptive buffer: based on sentence length (reduced by 50%)
+                
+                if audio_duration < 3.0:
+                    adaptive_buffer = 0.75  # Short sentences need more time
+                elif audio_duration < 6.0:
+                    adaptive_buffer = 0.5  # Medium sentences
+                else:
+                    adaptive_buffer = 0.25  # Long sentences
+                
+                extended_duration = audio_duration + lead_time + adaptive_buffer + linger_time
+                durations.append(extended_duration)
+                
+                logger.info(f"[{job_id}] Image {i+1}: audio={audio_duration:.2f}s, display={extended_duration:.2f}s")
+            
+            # Calculate total extended video duration
+            total_extended_duration = sum(durations)
+            logger.info(f"[{job_id}] Total video duration: {total_extended_duration:.2f}s (extended for natural pacing)")
+            
+            # Generate subtitles with lead time offset (0.5s per sentence)
+            subtitle_file = await subtitle_service.generate_subtitles_with_extended_durations(
+                sentences,
+                job_dir,
+                durations,
+                lead_time,
+                request.settings.subtitle_style if request.settings else None,
+                video_dimensions
+            )
+            
+            # Create gapped voice audio with silence matching extended durations
+            # This ensures voiceover syncs with subtitles and images
+            from src.services.tts_service import tts_service
+            voice_gapped = await tts_service.create_gapped_audio(
+                job_dir,
+                durations,
+                lead_time
+            )
+            
+            # Mix gapped audio with BGM
+            # BGM will be looped/extended to fill the entire video
+            mixed_audio = await audio_mixer.mix_audio(
+                voice_gapped,
+                job_dir,
+                request.bgm_url,
+                target_duration=total_extended_duration
+            )
             
             # Create video from images with Ken Burns effect
             final_video = await video_renderer.create_video_from_images(
@@ -481,6 +532,22 @@ async def render_video_manual(request: ManualRenderRequest):
             )
         else:
             # Original base video rendering
+            # Generate subtitles with standard timing (no lead time)
+            subtitle_file = await subtitle_service.generate_subtitles(
+                sentences,
+                job_dir,
+                request.settings.subtitle_style if request.settings else None,
+                video_dimensions
+            )
+            
+            # Mix audio first
+            mixed_audio = await audio_mixer.mix_audio(
+                voice_file,
+                job_dir,
+                request.bgm_url,
+                target_duration=float(request.desired_length) if request.desired_length else None
+            )
+            
             if base_video_path is None:
                 base_video_path = await video_renderer.download_video(request.base_video_url, job_dir)
             final_video = await video_renderer.render_video(
@@ -587,10 +654,12 @@ async def get_job_status(job_id: str):
     Returns job status and S3 locations when available.
     """
     job_manager = get_job_manager()
-    job_status = job_manager.get_job_status(job_id)
+    job_status = await job_manager.get_job_status(job_id)
 
     if not job_status:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    error = job_status.error if job_status.status == "failed" else None
 
     return RenderResponse(
         job_id=job_status.job_id,
@@ -599,7 +668,40 @@ async def get_job_status(job_id: str):
         subtitles_url=job_status.subtitles_url,
         video_url=job_status.video_url,
         thumbnail_url=job_status.thumbnail_url,
-        error=job_status.error
+        error=error
+    )
+
+
+@router.post("/resume/{job_id}", response_model=RenderResponse)
+async def resume_job(job_id: str):
+    """
+    Requeue a failed job for processing.
+    """
+    job_manager = get_job_manager()
+    job_status = await job_manager.get_job_status(job_id)
+
+    if not job_status:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if job_status.status == "completed":
+        raise HTTPException(status_code=409, detail="Job already completed")
+
+    if job_status.status == "failed":
+        try:
+            job_status = await job_manager.requeue_job(job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    error = job_status.error if job_status.status == "failed" else None
+
+    return RenderResponse(
+        job_id=job_status.job_id,
+        status=job_status.status,
+        voice_url=job_status.voice_url,
+        subtitles_url=job_status.subtitles_url,
+        video_url=job_status.video_url,
+        thumbnail_url=job_status.thumbnail_url,
+        error=error
     )
 
 

@@ -30,10 +30,15 @@ class Settings(BaseSettings):
     kokoro_model_path: str = "/usr/local/share/kokoro/kokoro-v1.0.onnx"
     kokoro_voices_path: str = "/usr/local/share/kokoro/voices/voices-v1.0.bin"
     kokoro_speaker: str = "af_bella"
+    kokoro_speaker_en: str = "af_bella"
+    kokoro_speaker_hi: str = "hf_beta"
     kokoro_threads: int = 2
 
     # Job concurrency settings
     max_concurrent_jobs: int = 3
+
+    # Job persistence
+    job_db_path: str = "data/job_store.sqlite"
 
     # S3 upload path prefixes
     s3_voice_prefix: str = "uploads/voiceovers"

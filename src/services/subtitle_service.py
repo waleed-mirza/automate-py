@@ -11,6 +11,7 @@ from src.utils.constants import (
     DEFAULT_SUBTITLE_SIZE,
     HORIZONTAL_SUBTITLE_MARGIN_SCALE,
     HORIZONTAL_SUBTITLE_SIZE_SCALE,
+    VIDEO_CROSSFADE_DURATION,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,29 +37,70 @@ class SubtitleService:
             "margin_v": DEFAULT_SUBTITLE_MARGIN_V
         }
 
-    async def generate_subtitles(
+    def _detect_script_and_get_font(self, text: str) -> str:
+        """
+        Detect if text contains Devanagari (Hindi) characters and return appropriate font.
+        
+        Devanagari Unicode range: U+0900 to U+097F
+        This covers Hindi characters and numerals.
+        
+        Args:
+            text: Text to analyze (typically a sentence or full script)
+            
+        Returns:
+            Font name suitable for the detected script:
+            - "Noto Sans Devanagari" for Hindi/Devanagari text
+            - "Noto Sans" for English/Latin text
+        """
+        # Check if any character in text is in Devanagari Unicode range
+        has_devanagari = any('\u0900' <= char <= '\u097F' for char in text)
+        
+        if has_devanagari:
+            logger.debug("Devanagari script detected in text, using Noto Sans Devanagari font")
+            return "Noto Sans Devanagari"
+        else:
+            logger.debug("Latin/English script detected in text, using Noto Sans font")
+            return "Noto Sans"
+
+    async def generate_subtitles_with_extended_durations(
         self,
         sentences: list[str],
         job_dir: Path,
+        extended_durations: list[float],
+        lead_time: float,
         subtitle_style: dict | None = None,
         video_dimensions: tuple[int, int] | None = None
     ) -> Path:
         """
-        Generate ASS subtitle file from sentences.
-
+        Generate ASS subtitle file with extended image durations and lead time.
+        
         Args:
             sentences: List of sentence strings
             job_dir: Job directory containing sentence audio files
+            extended_durations: Extended duration for each image segment
+            lead_time: Lead time before audio starts in each segment
             subtitle_style: Optional custom subtitle styling
             video_dimensions: Optional (width, height) of the video
-
+            
         Returns:
             Path to subs.ass file
         """
-        logger.info(f"Generating subtitles for {len(sentences)} sentences (job: {job_dir.name})")
-
+        logger.info(f"Generating subtitles with extended durations for {len(sentences)} sentences (job: {job_dir.name})")
+        
+        subs_file = job_dir / "subs.ass"
+        
         # Merge custom style with defaults
         style = {**self.default_style, **(subtitle_style or {})}
+        
+        # Auto-detect script and set appropriate font if not explicitly provided
+        if not subtitle_style or "font_name" not in subtitle_style:
+            # Sample first sentence to detect script
+            # This assumes all sentences are in the same language/script
+            sample_text = sentences[0] if sentences else ""
+            detected_font = self._detect_script_and_get_font(sample_text)
+            style["font_name"] = detected_font
+            logger.info(f"Auto-selected font '{detected_font}' based on script detection")
+
 
         # Adjust alignment and PlayRes if video dimensions provided
         play_res_x = 1920
@@ -98,21 +140,71 @@ class SubtitleService:
         # Get durations for each sentence audio file
         timings = []
         current_time = 0.0
+        durations: list[float | None] = [None] * len(sentences)
+        missing_indices: list[int] = []
 
         for i in range(len(sentences)):
             sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
-            duration = await self._get_audio_duration(sentence_file)
+            if sentence_file.exists() and sentence_file.stat().st_size > 0:
+                try:
+                    durations[i] = await self._get_audio_duration(sentence_file)
+                except Exception as exc:
+                    logger.warning(
+                        f"Failed to read duration for {sentence_file.name}: {exc}"
+                    )
+                    missing_indices.append(i)
+            else:
+                missing_indices.append(i)
 
+        if missing_indices:
+            fallback_total = None
+            voice_file = job_dir / "voice.wav"
+            if voice_file.exists() and voice_file.stat().st_size > 0:
+                try:
+                    fallback_total = await self._get_audio_duration(voice_file)
+                except Exception as exc:
+                    logger.warning(
+                        f"Failed to read voiceover duration for fallback: {exc}"
+                    )
+
+            known_total = sum(d for d in durations if d is not None)
+            if fallback_total is None:
+                logger.warning(
+                    "Missing sentence audio files and voiceover duration; using 5s fallback"
+                )
+                for index in missing_indices:
+                    durations[index] = 5.0
+            else:
+                remaining = max(fallback_total - known_total, 0.0)
+                weights = [self._sentence_weight(sentences[i]) for i in missing_indices]
+                total_weight = sum(weights)
+                if total_weight <= 0:
+                    weights = [1] * len(missing_indices)
+                    total_weight = len(missing_indices)
+
+                if remaining <= 0:
+                    average = fallback_total / max(len(sentences), 1)
+                    for index in missing_indices:
+                        durations[index] = average
+                else:
+                    for index, weight in zip(missing_indices, weights):
+                        durations[index] = remaining * (weight / total_weight)
+
+                logger.warning(
+                    "Missing sentence audio files; using voiceover duration fallback"
+                )
+
+        for i, sentence in enumerate(sentences):
+            duration = durations[i] if durations[i] is not None else 5.0
+            
             timings.append({
                 "start": current_time,
                 "end": current_time + duration,
-                "text": sentences[i]
+                "text": sentence
             })
-
             current_time += duration
 
         # Generate ASS file
-        subs_file = job_dir / "subs.ass"
         self._write_ass_file(subs_file, timings, style, play_res_x, play_res_y)
 
         logger.info(f"Subtitles generated: {subs_file}")
@@ -154,6 +246,11 @@ class SubtitleService:
             raise RuntimeError(f"ffprobe failed: {e.stderr}")
         except Exception as e:
             raise RuntimeError(f"Failed to get audio duration: {str(e)}")
+
+    @staticmethod
+    def _sentence_weight(sentence: str) -> int:
+        words = [word for word in sentence.split() if word]
+        return max(len(words), 1)
 
     def _write_ass_file(
         self,

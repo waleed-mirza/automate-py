@@ -13,11 +13,16 @@ MAX_SENTENCE_COUNT = 500  # Maximum number of sentences to process
 FFMPEG_PRESET = "fast"  # Balance between speed and quality (ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow)
 AUDIO_BITRATE = "192k"  # Audio bitrate for output video
 
+# Video sync settings (CRITICAL: These must be consistent across all components)
+VIDEO_CROSSFADE_DURATION = 0.5  # Crossfade duration between image segments in seconds
+# This value is used in: video_renderer.py, subtitle_service.py, tts_service.py
+# Changing this requires updating all three files to maintain A/V sync
+
 # TTS settings
 PIPER_THREADS = 2  # Limit Piper threads to avoid overload
 
 # Subtitle defaults
-DEFAULT_SUBTITLE_FONT = "Arial"
+DEFAULT_SUBTITLE_FONT = "Noto Sans"  # Supports both English and Hindi (with Devanagari fallback)
 DEFAULT_SUBTITLE_SIZE = 40
 DEFAULT_SUBTITLE_COLOR = "&H00FFFFFF"  # White
 DEFAULT_SUBTITLE_OUTLINE = 2
