@@ -137,17 +137,15 @@ class SubtitleService:
                 logger.info(f"Scaling font size from {original_size} to {scaled_size} (PlayResY: {play_res_y})")
                 style["font_size"] = scaled_size
 
-        # Get durations for each sentence audio file
-        timings = []
-        current_time = 0.0
-        durations: list[float | None] = [None] * len(sentences)
+        # Get actual audio durations for each sentence
+        audio_durations: list[float | None] = [None] * len(sentences)
         missing_indices: list[int] = []
 
         for i in range(len(sentences)):
             sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
             if sentence_file.exists() and sentence_file.stat().st_size > 0:
                 try:
-                    durations[i] = await self._get_audio_duration(sentence_file)
+                    audio_durations[i] = await self._get_audio_duration(sentence_file)
                 except Exception as exc:
                     logger.warning(
                         f"Failed to read duration for {sentence_file.name}: {exc}"
@@ -167,13 +165,13 @@ class SubtitleService:
                         f"Failed to read voiceover duration for fallback: {exc}"
                     )
 
-            known_total = sum(d for d in durations if d is not None)
+            known_total = sum(d for d in audio_durations if d is not None)
             if fallback_total is None:
                 logger.warning(
                     "Missing sentence audio files and voiceover duration; using 5s fallback"
                 )
                 for index in missing_indices:
-                    durations[index] = 5.0
+                    audio_durations[index] = 5.0
             else:
                 remaining = max(fallback_total - known_total, 0.0)
                 weights = [self._sentence_weight(sentences[i]) for i in missing_indices]
@@ -185,17 +183,137 @@ class SubtitleService:
                 if remaining <= 0:
                     average = fallback_total / max(len(sentences), 1)
                     for index in missing_indices:
-                        durations[index] = average
+                        audio_durations[index] = average
                 else:
                     for index, weight in zip(missing_indices, weights):
-                        durations[index] = remaining * (weight / total_weight)
+                        audio_durations[index] = remaining * (weight / total_weight)
 
                 logger.warning(
                     "Missing sentence audio files; using voiceover duration fallback"
                 )
 
+        # Calculate subtitle timings synchronized with gapped audio
+        # The gapped audio structure is: [lead_time silence] + [audio] + [trailing silence]
+        # Subtitles should appear when the audio starts (after lead_time) and end when audio ends
+        # 
+        # CRITICAL: Account for video crossfade overlap (VIDEO_CROSSFADE_DURATION)
+        # Each segment except the last is shortened by crossfade duration because
+        # video segments overlap during crossfade transitions
+        timings = []
+        current_time = 0.0
+        num_segments = len(sentences)
+        
         for i, sentence in enumerate(sentences):
-            duration = durations[i] if durations[i] is not None else 5.0
+            raw_audio_dur = audio_durations[i]
+            audio_duration: float = raw_audio_dur if raw_audio_dur is not None else 5.0
+            extended_dur: float = extended_durations[i] if i < len(extended_durations) else audio_duration + lead_time + 1.0
+            
+            # Account for crossfade overlap: each segment except the last is shortened
+            effective_segment_dur: float = extended_dur
+            if i < num_segments - 1:
+                effective_segment_dur -= VIDEO_CROSSFADE_DURATION
+            
+            # Subtitle starts after lead_time (when voiceover begins)
+            subtitle_start: float = current_time + lead_time
+            # Subtitle ends when voiceover ends (lead_time + audio_duration)
+            subtitle_end: float = current_time + lead_time + audio_duration
+            
+            timings.append({
+                "start": subtitle_start,
+                "end": subtitle_end,
+                "text": sentence
+            })
+            
+            logger.debug(
+                f"Subtitle {i+1}: segment_dur={effective_segment_dur:.2f}s, "
+                f"start={subtitle_start:.2f}s, end={subtitle_end:.2f}s, "
+                f"audio={audio_duration:.2f}s"
+            )
+            
+            # Move to next segment (accounting for crossfade overlap)
+            current_time += effective_segment_dur
+
+        # Generate ASS file
+        self._write_ass_file(subs_file, timings, style, play_res_x, play_res_y)
+
+        logger.info(f"Subtitles generated: {subs_file}")
+        return subs_file
+
+    async def generate_subtitles(
+        self,
+        sentences: list[str],
+        job_dir: Path,
+        subtitle_style: dict | None = None,
+        video_dimensions: tuple[int, int] | None = None
+    ) -> Path:
+        """
+        Generate ASS subtitle file with standard timing (for base video mode).
+        Subtitles are timed directly to audio durations without lead time or extended durations.
+        
+        Args:
+            sentences: List of sentence strings
+            job_dir: Job directory containing sentence audio files
+            subtitle_style: Optional custom subtitle styling
+            video_dimensions: Optional (width, height) of the video
+            
+        Returns:
+            Path to subs.ass file
+        """
+        logger.info(f"Generating standard subtitles for {len(sentences)} sentences (job: {job_dir.name})")
+        
+        subs_file = job_dir / "subs.ass"
+        
+        # Merge custom style with defaults
+        style = {**self.default_style, **(subtitle_style or {})}
+        
+        # Auto-detect script and set appropriate font if not explicitly provided
+        if not subtitle_style or "font_name" not in subtitle_style:
+            sample_text = sentences[0] if sentences else ""
+            detected_font = self._detect_script_and_get_font(sample_text)
+            style["font_name"] = detected_font
+            logger.info(f"Auto-selected font '{detected_font}' based on script detection")
+
+        # Adjust alignment and PlayRes if video dimensions provided
+        play_res_x = 1920
+        play_res_y = 1080
+
+        if video_dimensions:
+            width, height = video_dimensions
+            play_res_x = width
+            play_res_y = height
+
+            if not subtitle_style or "alignment" not in subtitle_style:
+                if height > width:
+                    logger.info("Vertical video detected, setting subtitle alignment to center (5)")
+                    style["alignment"] = 5
+                else:
+                    logger.info("Horizontal/Square video detected, keeping default alignment (2)")
+                    style["alignment"] = 2
+                    if not subtitle_style or "font_size" not in subtitle_style:
+                        style["font_size"] = int(round(style["font_size"] * HORIZONTAL_SUBTITLE_SIZE_SCALE))
+                    if not subtitle_style or "margin_v" not in subtitle_style:
+                        style["margin_v"] = int(round(style["margin_v"] * HORIZONTAL_SUBTITLE_MARGIN_SCALE))
+            
+            if play_res_y != 1080:
+                original_size = style["font_size"]
+                scaled_size = int(original_size * play_res_y / 1080)
+                scaled_size = max(10, scaled_size)
+                logger.info(f"Scaling font size from {original_size} to {scaled_size} (PlayResY: {play_res_y})")
+                style["font_size"] = scaled_size
+
+        # Get durations for each sentence audio file
+        timings = []
+        current_time = 0.0
+        
+        for i, sentence in enumerate(sentences):
+            sentence_file = job_dir / f"sentence_{i+1:03d}.wav"
+            duration = 5.0  # Default fallback
+            
+            if sentence_file.exists() and sentence_file.stat().st_size > 0:
+                try:
+                    duration = await self._get_audio_duration(sentence_file)
+                except Exception as exc:
+                    logger.warning(f"Failed to read duration for {sentence_file.name}: {exc}")
             
             timings.append({
                 "start": current_time,
@@ -207,7 +325,7 @@ class SubtitleService:
         # Generate ASS file
         self._write_ass_file(subs_file, timings, style, play_res_x, play_res_y)
 
-        logger.info(f"Subtitles generated: {subs_file}")
+        logger.info(f"Standard subtitles generated: {subs_file}")
         return subs_file
 
     async def _get_audio_duration(self, audio_file: Path) -> float:
